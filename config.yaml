@@ -1,0 +1,37 @@
+sources:
+  - name: rideapart
+    feeds:
+      - https://www.rideapart.com/rss/news/all/
+      - https://www.rideapart.com/rss/reviews/all/
+      - https://www.rideapart.com/rss/features/all/
+    enabled: true
+
+translator:
+  provider: libretranslate #ollama  # or "libretranslate"
+  ollama:
+    model: gemma2:9b
+    host: http://localhost:11434
+    prompt: |
+      Переведи следующую статью о мотоциклах на русский язык.
+      Сохрани технические термины и названия моделей мотоциклов на английском.
+      Используй профессиональную мотожурналистскую стилистику.
+      Не добавляй никаких комментариев, верни только перевод.
+
+      Статья:
+  libretranslate:
+    host: http://localhost:5050
+
+database:
+  path: ./moto-news.db
+
+mkdocs:
+  path: ./blog
+  docs_dir: docs/news
+  auto_commit: true
+  git_repo: https://github.com/KlimDos/my-blog.git
+  git_remote: origin
+  git_branch: main
+
+schedule:
+  fetch_interval: 6h
+  translate_batch: 10
