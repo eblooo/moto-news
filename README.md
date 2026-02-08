@@ -1,15 +1,16 @@
 # Moto News Aggregator
 
-Автоматизированная система агрегации мотоновостей с переводом на русский язык.
+Автоматизированная система агрегации мотоновостей с переводом на русский язык и AI-агентами для анализа блога.
 
 ## Возможности
 
-- 📡 Парсинг RSS-фидов с мотоциклетных порталов (RideApart)
-- 🔄 Скрапинг полного текста статей (JSON-LD + HTML fallback)
-- 🌐 Перевод на русский через Ollama или LibreTranslate
-- 📝 Публикация в блог на Material for MkDocs
-- 🔧 Автоматический git commit/push
-- 🌍 HTTP API сервер (Gin) для управления через REST
+- RSS-парсинг мотоциклетных порталов (RideApart)
+- Скрапинг полного текста статей (JSON-LD + HTML fallback)
+- Перевод на русский через Ollama или LibreTranslate
+- Публикация в блог на Material for MkDocs через GitHub API
+- HTTP API сервер (Gin) для управления через REST
+- AI-агенты для анализа сайта и предложений по улучшению (LangChain + LangGraph)
+- Деплой в Kubernetes (microk8s) через ArgoCD
 
 ## Быстрый старт
 
@@ -17,120 +18,105 @@
 
 - Go 1.23+
 - Ollama (для перевода)
-- Material for MkDocs (для блога)
+- `GITHUB_TOKEN` — Fine-grained PAT для публикации в блог
 
 ### Установка
 
 ```bash
-# Клонируйте репозиторий
-git clone https://github.com/KlimDos/moto-news.git
+git clone https://github.com/eblooo/moto-news.git
 cd moto-news
-
-# Установите зависимости
 go mod tidy
-
-# Соберите приложение
 go build -o aggregator ./cmd/aggregator/
-
-# Отредактируйте конфигурацию
-nano config.yaml
 ```
 
-### Установка Ollama (для перевода)
+### Установка Ollama
 
 ```bash
 # macOS
 brew install ollama
 
-# Запустите сервер
-ollama serve
+# Linux
+curl -fsSL https://ollama.com/install.sh | sh
 
-# Скачайте модель
-ollama pull gemma3:latest
+# Скачать модель
+ollama pull qwen2.5-coder:7b
 ```
 
-### Установка MkDocs
+### Запуск
 
 ```bash
-pip install mkdocs-material
-pip install mkdocs-blog-plugin
-```
+# Установить токен для публикации в GitHub
+export GITHUB_TOKEN=github_pat_xxxxx
 
-## Использование
-
-### HTTP API сервер (рекомендуется)
-
-```bash
-# Запустить веб-сервер на :8080
+# Запустить HTTP API сервер
 ./aggregator server
+
+# Или полный цикл одной командой
+./aggregator run
 ```
 
-Все операции доступны через REST API:
+## HTTP API
+
+```bash
+./aggregator server   # Запуск на :8080
+```
 
 | Endpoint | Метод | Описание |
 |---|---|---|
 | `/api/fetch` | POST | Получить новые статьи из RSS |
 | `/api/translate?limit=10` | POST | Перевести статьи через Ollama |
-| `/api/publish?limit=100` | POST | Опубликовать в MkDocs |
+| `/api/publish?limit=100` | POST | Опубликовать в блог (GitHub API) |
 | `/api/run` | POST | Полный цикл: fetch → translate → publish |
-| `/api/rescrape` | POST | Повторно загрузить контент коротких статей |
+| `/api/rescrape` | POST | Повторно загрузить контент статей |
 | `/api/pull` | POST | Git pull блог-репозитория |
 | `/api/push` | POST | Git push изменений |
 | `/api/stats` | GET | Статистика базы данных |
 | `/api/articles?limit=20` | GET | Список статей |
 | `/api/article/:id` | GET | Получить статью по ID |
-| `/health` | GET | Проверка здоровья сервера |
+| `/health` | GET | Health check |
 
 Примеры:
 
 ```bash
-# Получить новые статьи
 curl -X POST http://localhost:8080/api/fetch
-
-# Перевести 5 статей
 curl -X POST "http://localhost:8080/api/translate?limit=5"
-
-# Полный цикл
-curl -X POST http://localhost:8080/api/run
-
-# Статистика
+curl -X POST http://localhost:8080/api/publish
 curl http://localhost:8080/api/stats
-
-# Список последних статей
-curl "http://localhost:8080/api/articles?limit=10"
 ```
 
-### Команды CLI
+## CLI команды
 
 ```bash
-# Получить новые статьи из RSS
-./aggregator fetch
-
-# Перевести статьи (по умолчанию 10)
-./aggregator translate --limit 20
-
-# Опубликовать в MkDocs
-./aggregator publish
-
-# Полный цикл: fetch -> translate -> publish
-./aggregator run
-
-# Повторно скачать контент для статей с коротким текстом
-./aggregator rescrape
-
-# Статистика
-./aggregator stats
-
-# Git операции
-./aggregator pull
-./aggregator push
-
-# Запустить HTTP API сервер
-./aggregator server
-
-# Помощь
-./aggregator --help
+./aggregator fetch              # Получить новые статьи из RSS
+./aggregator translate -l 20    # Перевести статьи
+./aggregator publish            # Опубликовать в MkDocs
+./aggregator run                # Полный цикл
+./aggregator rescrape           # Повторно скачать контент
+./aggregator stats              # Статистика
+./aggregator pull               # Git pull
+./aggregator push               # Git push
+./aggregator server             # HTTP API сервер
 ```
+
+## Публикация статей
+
+Поддерживаются два способа публикации:
+
+### 1. GitHub API (рекомендуется)
+
+Если установлен `GITHUB_TOKEN`, статьи пушатся напрямую через GitHub Contents API. Это автоматически триггерит GitHub Actions для деплоя на GitHub Pages.
+
+Токен: **Fine-grained PAT** с правами:
+- Repository: `KlimDos/my-blog` only
+- Permissions: Contents → Read and write
+
+```bash
+export GITHUB_TOKEN=github_pat_xxxxx
+```
+
+### 2. Локальный git (fallback)
+
+Если `GITHUB_TOKEN` не установлен, статьи записываются в локальную директорию и коммитятся через `git`. Требует клонированный репозиторий блога и настроенные git credentials.
 
 ## Конфигурация
 
@@ -146,19 +132,12 @@ sources:
     enabled: true
 
 translator:
-  provider: ollama  # или "libretranslate"
+  provider: ollama
   ollama:
-    model: gemma3:latest
+    model: qwen2.5-coder:7b
     host: http://localhost:11434
     prompt: |
-      Переведи следующую статью о мотоциклах на русский язык.
-      Сохрани технические термины и названия моделей мотоциклов на английском.
-      Используй профессиональную мотожурналистскую стилистику.
-      Не добавляй никаких комментариев, верни только перевод.
-
-      Статья:
-  libretranslate:
-    host: http://localhost:5050
+      You are a professional English to Russian translator...
 
 database:
   path: ./moto-news.db
@@ -168,7 +147,6 @@ mkdocs:
   docs_dir: docs
   auto_commit: true
   git_repo: https://github.com/KlimDos/my-blog.git
-  git_remote: origin
   git_branch: main
 
 server:
@@ -177,8 +155,26 @@ server:
 
 schedule:
   fetch_interval: 6h
-  translate_batch: 10
+  translate_batch: 5
 ```
+
+## AI-агенты
+
+Python-агенты для анализа блога и взаимодействия через GitHub Discussions.
+
+```bash
+cd agents
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+| Агент | Описание | Запуск |
+|---|---|---|
+| `site_assessor.py` | Анализ блога, генерация отчёта | `python site_assessor.py --url https://blog.alimov.top` |
+| `user_agent.py` | ReAct-агент, пишет предложения в GitHub Discussions | `python user_agent.py --once --dry-run` |
+| `admin_agent.py` | LangGraph workflow с human approval | `python admin_agent.py --once` |
+
+Подробнее: см. `agents/agents.yaml` для настройки моделей и параметров.
 
 ## Структура проекта
 
@@ -187,100 +183,39 @@ moto-news/
 ├── cmd/aggregator/        # CLI + точка входа
 ├── internal/
 │   ├── config/            # Конфигурация (Viper)
-│   ├── fetcher/           # RSS парсер + скрапер (JSON-LD / HTML)
+│   ├── fetcher/           # RSS парсер + скрапер
 │   ├── models/            # Модели данных (Article)
 │   ├── storage/           # SQLite хранилище
 │   ├── translator/        # Ollama / LibreTranslate
 │   ├── formatter/         # Markdown форматирование
-│   ├── publisher/         # MkDocs + Git операции
-│   ├── service/           # Бизнес-логика (общая для CLI и API)
-│   └── server/            # Gin HTTP API сервер
-├── blog/                  # MkDocs сайт
-├── config.yaml            # Конфигурация
-└── moto-news.db           # SQLite база (создаётся автоматически)
+│   ├── publisher/         # GitHub API + MkDocs git (fallback)
+│   ├── service/           # Бизнес-логика
+│   └── server/            # Gin HTTP API
+├── agents/                # Python AI-агенты (LangChain/LangGraph)
+├── deploy/                # K8s манифесты + скрипты деплоя
+├── blog/                  # MkDocs сайт (отдельный репо)
+├── Dockerfile             # Multi-stage build для Go
+├── Makefile               # Команды сборки и деплоя
+└── config.yaml            # Конфигурация
 ```
 
-## Автоматизация
+## Деплой в Kubernetes (microk8s)
 
-### Cron (ежедневный запуск)
+Подробная документация: [`deploy/README.md`](deploy/README.md)
+
+Архитектура:
+- **Ollama** — на хосте (systemd), доступна из K8s через Endpoints
+- **Aggregator** — Deployment + CronJob (каждые 6ч)
+- **AI Agents** — CronJobs (user-agent каждые 2ч, site-assessor ежедневно)
+- **Ingress** — NGINX + Let's Encrypt на `moto-news.alimov.top`
+- **Secrets** — ExternalSecrets (Doppler)
 
 ```bash
-crontab -e
+# Docker сборка
+make docker-build
 
-# Каждый день в 8:00
-0 8 * * * cd /path/to/moto-news && ./aggregator run >> /var/log/moto-news.log 2>&1
-```
-
-### systemd (Linux)
-
-Создайте `/etc/systemd/system/moto-news.service` для запуска HTTP сервера:
-
-```ini
-[Unit]
-Description=Moto News Aggregator API
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory=/path/to/moto-news
-ExecStart=/path/to/moto-news/aggregator server
-Restart=always
-User=your-user
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-sudo systemctl enable moto-news
-sudo systemctl start moto-news
-```
-
-### launchd (macOS)
-
-Создайте `~/Library/LaunchAgents/com.moto-news.aggregator.plist`:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.moto-news.aggregator</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/Users/YOUR_USER/moto-news/aggregator</string>
-        <string>server</string>
-    </array>
-    <key>WorkingDirectory</key>
-    <string>/Users/YOUR_USER/moto-news</string>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>/Users/YOUR_USER/moto-news/logs/stdout.log</string>
-    <key>StandardErrorPath</key>
-    <string>/Users/YOUR_USER/moto-news/logs/stderr.log</string>
-</dict>
-</plist>
-```
-
-```bash
-launchctl load ~/Library/LaunchAgents/com.moto-news.aggregator.plist
-```
-
-## Запуск MkDocs
-
-```bash
-cd blog
-
-# Локальный сервер для разработки
-mkdocs serve
-
-# Сборка статического сайта
-mkdocs build
-
-# Деплой на GitHub Pages
-mkdocs gh-deploy
+# Или через Makefile
+make deploy-all
 ```
 
 ## Лицензия

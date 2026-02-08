@@ -129,14 +129,14 @@ log_info "Step 6: Building Docker images..."
 
 # Build aggregator
 log_info "Building aggregator image..."
-docker build -t localhost:32000/moto-news-aggregator:latest -f Dockerfile . 2>&1 | tail -5
-docker push localhost:32000/moto-news-aggregator:latest
+docker build -t klimdos/moto-news-aggregator:latest -f Dockerfile . 2>&1 | tail -5
+docker push klimdos/moto-news-aggregator:latest
 log_ok "Aggregator image built and pushed"
 
 # Build agents
 log_info "Building agents image..."
-docker build -t localhost:32000/moto-news-agents:latest -f agents/Dockerfile agents/ 2>&1 | tail -5
-docker push localhost:32000/moto-news-agents:latest
+docker build -t klimdos/moto-news-agents:latest -f agents/Dockerfile agents/ 2>&1 | tail -5
+docker push klimdos/moto-news-agents:latest
 log_ok "Agents image built and pushed"
 
 # ===== Step 7: Deploy to microk8s =====
@@ -149,8 +149,7 @@ microk8s kubectl apply -f deploy/k8s/base/namespace.yaml
 microk8s kubectl apply -f deploy/k8s/aggregator/configmap.yaml
 microk8s kubectl apply -f deploy/k8s/aggregator/pvc.yaml
 microk8s kubectl apply -f deploy/k8s/aggregator/service.yaml
-sed 's|moto-news-aggregator:latest|localhost:32000/moto-news-aggregator:latest|g' \
-    deploy/k8s/aggregator/deployment.yaml | microk8s kubectl apply -f -
+microk8s kubectl apply -f deploy/k8s/aggregator/deployment.yaml
 microk8s kubectl apply -f deploy/k8s/aggregator/cronjob.yaml
 
 log_info "Waiting for aggregator to be ready..."
@@ -160,8 +159,7 @@ log_ok "Aggregator deployed"
 # Agents
 microk8s kubectl apply -f deploy/k8s/agents/configmap.yaml
 for f in deploy/k8s/agents/cronjob-*.yaml; do
-    sed 's|moto-news-agents:latest|localhost:32000/moto-news-agents:latest|g' \
-        "$f" | microk8s kubectl apply -f -
+    microk8s kubectl apply -f "$f"
 done
 log_ok "Agents deployed"
 

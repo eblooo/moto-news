@@ -23,12 +23,12 @@ stats: build
 # ===== Docker =====
 
 docker-build:
-	docker build -t localhost:32000/moto-news-aggregator:latest .
-	docker build -t localhost:32000/moto-news-agents:latest -f agents/Dockerfile agents/
+	docker build -t klimdos/moto-news-aggregator:latest .
+	docker build -t klimdos/moto-news-agents:latest -f agents/Dockerfile agents/
 
 docker-push: docker-build
-	docker push localhost:32000/moto-news-aggregator:latest
-	docker push localhost:32000/moto-news-agents:latest
+	docker push klimdos/moto-news-aggregator:latest
+	docker push klimdos/moto-news-agents:latest
 
 # ===== microk8s Deploy =====
 

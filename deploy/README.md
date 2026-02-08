@@ -14,9 +14,9 @@
   │  deepseek:8b     │
   │  :11434          │
   └────────┬─────────┘
-           │ host.cni.cncf.io:11434
+           │ Endpoints → 172.16.0.164:11434
 ┌──────────┼──────────────────────────────────────────┐
-│  microk8s│(namespace: moto-news)                     │
+│  microk8s│(namespace: moto-news-ns)                  │
 │          │                                           │
 │  ┌───────┴──────┐    ┌───────────┐                  │
 │  │  Aggregator  │    │  Agents   │                  │
@@ -29,8 +29,13 @@
 │         │                   │                        │
 │  ┌──────┴───────┐   ┌──────┴──────┐                 │
 │  │  SQLite DB   │   │GitHub Disc. │                 │
-│  │  PVC: 2Gi    │   │(API)        │                 │
+│  │  hostPath    │   │(API)        │                 │
 │  └──────────────┘   └─────────────┘                 │
+│         │                                            │
+│  ┌──────┴───────┐                                   │
+│  │ GitHub API   │ ← GITHUB_TOKEN (ExternalSecret)   │
+│  │ Contents API │ → auto-triggers GH Actions        │
+│  └──────────────┘                                   │
 └─────────────────────────────────────────────────────┘
          │                      │
          ▼                      ▼
@@ -75,7 +80,7 @@ microk8s enable dns storage registry
 
 - **dns** — внутренний DNS для k8s сервисов
 - **storage** — динамическое выделение PersistentVolumes
-- **registry** — локальный Docker registry (localhost:32000)
+- **registry** — (опционально) локальный Docker registry
 
 ### 4. Установить Docker (для сборки образов)
 
@@ -88,20 +93,23 @@ sudo usermod -aG docker $USER
 
 ```bash
 # Клонировать репозиторий
-git clone https://github.com/KlimDos/moto-news.git
+git clone https://github.com/eblooo/moto-news.git
 cd moto-news
 
-# Запустить деплой
+# Запустить деплой (standalone, без ArgoCD)
 ./deploy/deploy.sh all
 ```
 
 Скрипт автоматически:
 1. Соберёт Docker-образы (aggregator + agents)
 2. Запушит их в локальный registry microk8s
-3. Создаст namespace `moto-news`
-4. Задеплоит Ollama, скачает модели
-5. Задеплоит Aggregator (Go HTTP API)
-6. Настроит CronJobs для агентов
+3. Создаст namespace
+4. Задеплоит Aggregator (Go HTTP API)
+5. Настроит CronJobs для агентов
+
+> **Примечание:** Для production-деплоя используется ArgoCD через репозиторий `home-k8s`.
+> Манифесты находятся в `home-k8s/application-data/yaml-local/moto-news/`.
+> Секреты управляются через ExternalSecrets (Doppler).
 
 ## Пошаговый деплой
 
@@ -121,14 +129,14 @@ systemctl status ollama
 ./deploy/deploy.sh models
 ```
 
-K8s pods обращаются к Ollama через `host.cni.cncf.io:11434`.
+K8s pods обращаются к Ollama через Service `ollama-host-svc` → Endpoints `172.16.0.164:11434`.
 
 ### Шаг 3: Aggregator
 
 ```bash
 # Собрать образ
-docker build -t localhost:32000/moto-news-aggregator:latest .
-docker push localhost:32000/moto-news-aggregator:latest
+docker build -t klimdos/moto-news-aggregator:latest .
+docker push klimdos/moto-news-aggregator:latest
 
 # Деплой
 microk8s kubectl apply -f deploy/k8s/aggregator/
@@ -138,12 +146,11 @@ microk8s kubectl apply -f deploy/k8s/aggregator/
 
 ```bash
 # Собрать образ
-docker build -t localhost:32000/moto-news-agents:latest -f agents/Dockerfile agents/
-docker push localhost:32000/moto-news-agents:latest
+docker build -t klimdos/moto-news-agents:latest -f agents/Dockerfile agents/
+docker push klimdos/moto-news-agents:latest
 
-# Создать секрет с GitHub токеном
-microk8s kubectl -n moto-news create secret generic github-token \
-  --from-literal=GITHUB_TOKEN=ghp_your_actual_token_here
+# Секрет с GitHub токеном (через ExternalSecrets / Doppler)
+# Ключ MOTO_NEWS_GITHUB_TOKEN в Doppler → создаётся автоматически как git-credentials
 
 # Деплой
 microk8s kubectl apply -f deploy/k8s/agents/
@@ -153,13 +160,13 @@ microk8s kubectl apply -f deploy/k8s/agents/
 
 ```bash
 # Статус всех ресурсов
-microk8s kubectl -n moto-news get all
+microk8s kubectl -n moto-news-ns get all
 
-# Логи Ollama
-microk8s kubectl -n moto-news logs statefulset/ollama -f
+# Логи Ollama (на хосте)
+sudo journalctl -u ollama -f
 
 # Логи Aggregator
-microk8s kubectl -n moto-news logs deployment/aggregator -f
+microk8s kubectl -n moto-news-ns logs deployment/aggregator -f
 
 # Health check
 curl http://localhost:30080/health
@@ -186,17 +193,17 @@ curl -X POST http://localhost:30080/api/run
 
 ```bash
 # Пересобрать и обновить образы
-docker build -t localhost:32000/moto-news-aggregator:latest .
-docker push localhost:32000/moto-news-aggregator:latest
+docker build -t klimdos/moto-news-aggregator:latest .
+docker push klimdos/moto-news-aggregator:latest
 
 # Перезапустить deployment
-microk8s kubectl -n moto-news rollout restart deployment/aggregator
+microk8s kubectl -n moto-news-ns rollout restart deployment/aggregator
 ```
 
 ## Удаление
 
 ```bash
-microk8s kubectl delete namespace moto-news
+microk8s kubectl delete namespace moto-news-ns
 ```
 
 ## Файловая структура деплоя

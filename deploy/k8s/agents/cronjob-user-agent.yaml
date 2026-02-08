@@ -21,7 +21,7 @@ spec:
           restartPolicy: OnFailure
           containers:
             - name: user-agent
-              image: moto-news-agents:latest
+              image: klimdos/moto-news-agents:latest
               imagePullPolicy: IfNotPresent
               command: ["python", "user_agent.py", "--once", "--config", "/app/config/agents.yaml"]
               env:

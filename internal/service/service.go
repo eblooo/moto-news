@@ -7,6 +7,7 @@ import (
 
 	"moto-news/internal/config"
 	"moto-news/internal/fetcher"
+	"moto-news/internal/models"
 	"moto-news/internal/publisher"
 	"moto-news/internal/storage"
 	"moto-news/internal/translator"
@@ -156,10 +157,11 @@ func (s *Service) Translate(limit int) (*TranslateResult, error) {
 	fmt.Printf("Using translator: %s\n", trans.Name())
 	fmt.Printf("Articles to translate: %d\n\n", len(articles))
 
-	pub := publisher.NewMkDocsPublisher(&s.cfg.MkDocs)
 	ctx := context.Background()
 	totalStart := time.Now()
-	published := 0
+
+	// Collect translated articles for batch publish
+	var translatedArticles []*models.Article
 
 	for i, article := range articles {
 		articleStart := time.Now()
@@ -196,24 +198,47 @@ func (s *Service) Translate(limit int) (*TranslateResult, error) {
 		result.Translated++
 		fmt.Printf("  ✓ Перевод: %s (%s)\n", article.TitleRU, elapsed)
 
-		// Publish immediately after translation
-		if err := pub.Publish(article); err != nil {
-			fmt.Printf("  ✗ Error publishing: %v\n", err)
-		} else {
-			article.PublishedToMkDocs = true
-			s.store.UpdateArticle(article)
-			published++
-			fmt.Printf("  ✓ Опубликовано в MkDocs\n")
-		}
+		translatedArticles = append(translatedArticles, article)
 	}
 
 	totalElapsed := time.Since(totalStart).Round(time.Second)
-	fmt.Printf("\nTranslated %d of %d articles, published %d (errors: %d) in %s\n",
-		result.Translated, result.Total, published, result.Errors, totalElapsed)
+	fmt.Printf("\nTranslated %d of %d articles (errors: %d) in %s\n",
+		result.Translated, result.Total, result.Errors, totalElapsed)
 
-	if s.cfg.MkDocs.AutoCommit && published > 0 {
-		if err := pub.GitCommit(fmt.Sprintf("Add %d new articles", published)); err != nil {
-			fmt.Printf("Warning: git commit failed: %v\n", err)
+	// Publish all translated articles
+	if len(translatedArticles) > 0 {
+		ghPub := publisher.NewGitHubPublisher(&s.cfg.MkDocs)
+		if ghPub.IsAvailable() {
+			// Batch push via GitHub API (single commit)
+			fmt.Printf("\nPublishing %d articles via GitHub API...\n", len(translatedArticles))
+			if err := ghPub.PublishMultiple(translatedArticles); err != nil {
+				fmt.Printf("  ✗ GitHub publish error: %v\n", err)
+			} else {
+				for _, a := range translatedArticles {
+					a.PublishedToMkDocs = true
+					s.store.UpdateArticle(a)
+				}
+				fmt.Printf("  ✓ Published %d articles to GitHub\n", len(translatedArticles))
+			}
+		} else {
+			// Fallback to local file + git
+			fmt.Println("\nGITHUB_TOKEN not set, using local git publisher...")
+			pub := publisher.NewMkDocsPublisher(&s.cfg.MkDocs)
+			published := 0
+			for _, article := range translatedArticles {
+				if err := pub.Publish(article); err != nil {
+					fmt.Printf("  ✗ Error publishing: %v\n", err)
+				} else {
+					article.PublishedToMkDocs = true
+					s.store.UpdateArticle(article)
+					published++
+				}
+			}
+			if s.cfg.MkDocs.AutoCommit && published > 0 {
+				if err := pub.GitCommit(fmt.Sprintf("Add %d new articles", published)); err != nil {
+					fmt.Printf("Warning: git commit failed: %v\n", err)
+				}
+			}
 		}
 	}
 
@@ -235,36 +260,55 @@ func (s *Service) Publish(limit int) (*PublishResult, error) {
 		return result, nil
 	}
 
-	pub := publisher.NewMkDocsPublisher(&s.cfg.MkDocs)
 	fmt.Printf("Articles to publish: %d\n\n", len(articles))
 
-	for i, article := range articles {
-		fmt.Printf("[%d/%d] Publishing: %s\n", i+1, len(articles), article.TitleRU)
-		if err := pub.Publish(article); err != nil {
-			fmt.Printf("  ✗ Error: %v\n", err)
-			result.Errors++
-			continue
+	ghPub := publisher.NewGitHubPublisher(&s.cfg.MkDocs)
+	if ghPub.IsAvailable() {
+		// Batch push via GitHub API
+		fmt.Println("Publishing via GitHub API...")
+		if err := ghPub.PublishMultiple(articles); err != nil {
+			fmt.Printf("  ✗ GitHub publish error: %v\n", err)
+			result.Errors = len(articles)
+			return result, nil
+		}
+		for _, a := range articles {
+			a.PublishedToMkDocs = true
+			s.store.UpdateArticle(a)
+			result.Published++
+		}
+		fmt.Printf("  ✓ Published %d articles to GitHub\n", result.Published)
+	} else {
+		// Fallback to local git
+		fmt.Println("GITHUB_TOKEN not set, using local git publisher...")
+		pub := publisher.NewMkDocsPublisher(&s.cfg.MkDocs)
+
+		for i, article := range articles {
+			fmt.Printf("[%d/%d] Publishing: %s\n", i+1, len(articles), article.TitleRU)
+			if err := pub.Publish(article); err != nil {
+				fmt.Printf("  ✗ Error: %v\n", err)
+				result.Errors++
+				continue
+			}
+
+			article.PublishedToMkDocs = true
+			if err := s.store.UpdateArticle(article); err != nil {
+				fmt.Printf("  ✗ Error updating status: %v\n", err)
+				result.Errors++
+				continue
+			}
+
+			result.Published++
+			fmt.Printf("  ✓ Published\n")
 		}
 
-		article.PublishedToMkDocs = true
-		if err := s.store.UpdateArticle(article); err != nil {
-			fmt.Printf("  ✗ Error updating status: %v\n", err)
-			result.Errors++
-			continue
+		if s.cfg.MkDocs.AutoCommit && result.Published > 0 {
+			if err := pub.GitCommit(fmt.Sprintf("Add %d new articles", result.Published)); err != nil {
+				fmt.Printf("Warning: git commit failed: %v\n", err)
+			}
 		}
-
-		result.Published++
-		fmt.Printf("  ✓ Published\n")
 	}
 
 	fmt.Printf("\nPublished %d of %d articles (errors: %d)\n", result.Published, result.Total, result.Errors)
-
-	if s.cfg.MkDocs.AutoCommit && result.Published > 0 {
-		if err := pub.GitCommit(fmt.Sprintf("Add %d new articles", result.Published)); err != nil {
-			fmt.Printf("Warning: git commit failed: %v\n", err)
-		}
-	}
-
 	return result, nil
 }
 

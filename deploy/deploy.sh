@@ -81,17 +81,17 @@ build_images() {
     # Build aggregator image
     log_info "Building aggregator image..."
     cd "$PROJECT_ROOT"
-    docker build -t localhost:32000/moto-news-aggregator:latest -f Dockerfile .
-    docker push localhost:32000/moto-news-aggregator:latest 2>/dev/null || \
-        log_warn "Could not push to local registry. Ensure microk8s registry is enabled."
+    docker build -t klimdos/moto-news-aggregator:latest -f Dockerfile .
+    docker push klimdos/moto-news-aggregator:latest 2>/dev/null || \
+        log_warn "Could not push to Docker Hub. Ensure you are logged in (docker login)."
     log_ok "Aggregator image built"
 
     # Build agents image
     log_info "Building agents image..."
     cd "$PROJECT_ROOT/agents"
-    docker build -t localhost:32000/moto-news-agents:latest -f Dockerfile .
-    docker push localhost:32000/moto-news-agents:latest 2>/dev/null || \
-        log_warn "Could not push to local registry."
+    docker build -t klimdos/moto-news-agents:latest -f Dockerfile .
+    docker push klimdos/moto-news-agents:latest 2>/dev/null || \
+        log_warn "Could not push to Docker Hub."
     log_ok "Agents image built"
 
     cd "$PROJECT_ROOT"
@@ -143,9 +143,7 @@ deploy_aggregator() {
     microk8s kubectl apply -f "$K8S_DIR/aggregator/pvc.yaml"
     microk8s kubectl apply -f "$K8S_DIR/aggregator/service.yaml"
 
-    # Patch deployment to use local registry image
-    sed 's|moto-news-aggregator:latest|localhost:32000/moto-news-aggregator:latest|g' \
-        "$K8S_DIR/aggregator/deployment.yaml" | microk8s kubectl apply -f -
+    microk8s kubectl apply -f "$K8S_DIR/aggregator/deployment.yaml"
 
     microk8s kubectl apply -f "$K8S_DIR/aggregator/cronjob.yaml"
 
@@ -171,10 +169,8 @@ deploy_agents() {
         log_warn "Agents will run in dry-run mode without the token."
     fi
 
-    # Patch CronJobs to use local registry
     for f in "$K8S_DIR/agents/cronjob-"*.yaml; do
-        sed 's|moto-news-agents:latest|localhost:32000/moto-news-agents:latest|g' \
-            "$f" | microk8s kubectl apply -f -
+        microk8s kubectl apply -f "$f"
     done
 
     log_ok "Agents deployed"
