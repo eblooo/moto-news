@@ -34,13 +34,13 @@ spec:
                   echo ""
 
                   echo ""
-                  echo "--- Step 2: Translate articles (limit=5 for CPU) ---"
-                  curl -s -X POST "http://aggregator:8080/api/translate?limit=5" --max-time 3600
+                  echo "--- Step 2: Translate articles (limit=2 for CPU) ---"
+                  curl -s -X POST "http://aggregator:8080/api/translate?limit=2" --max-time 3600
                   echo ""
 
                   echo ""
                   echo "--- Step 3: Publish to MkDocs ---"
-                  curl -s -X POST "http://aggregator:8080/api/publish?limit=50"
+                  curl -s -X POST "http://aggregator:8080/api/publish?limit=10"
                   echo ""
 
                   echo ""
