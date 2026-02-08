@@ -437,6 +437,15 @@ func (s *Service) createTranslator() (translator.Translator, error) {
 			s.cfg.Translator.Ollama.Host,
 			s.cfg.Translator.Ollama.Model,
 			s.cfg.Translator.Ollama.Prompt,
+			s.cfg.Translator.Ollama.TitlePrompt,
+			s.cfg.Translator.Ollama.Temperature,
+			s.cfg.Translator.Ollama.TopP,
+			s.cfg.Translator.Ollama.NumCtx,
+		), nil
+	case "deepl":
+		return translator.NewDeepLTranslator(
+			s.cfg.Translator.DeepL.APIKey,
+			s.cfg.Translator.DeepL.Free,
 		), nil
 	case "libretranslate":
 		return translator.NewLibreTranslateTranslator(s.cfg.Translator.LibreTranslate.Host), nil

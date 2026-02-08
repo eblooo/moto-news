@@ -7,16 +7,72 @@ sources:
     enabled: true
 
 translator:
-  provider: ollama  # or "libretranslate"
+  provider: deepl  # "ollama", "deepl", or "libretranslate"
   ollama:
-    model: translategemma:12b
+    model: gemma2:9b
     host: http://localhost:11434
+    temperature: 0.15
+    top_p: 0.9
+    num_ctx: 8192
     prompt: |
-      You are a professional English (en) to Russian (ru) translator. Your goal is to accurately convey the meaning and nuances of the original English text while adhering to Russian grammar, vocabulary, and cultural sensitivities.
+      Ты — профессиональный мотожурналист-переводчик с английского на русский.
+      Твоя задача — переводить статьи о мотоциклах так, чтобы они читались как оригинальный русскоязычный мотожурналистский текст, а НЕ как машинный перевод.
 
-      Produce only the Russian translation, without any additional explanations or commentary. Please translate the following English text into Russian:
+      ПРАВИЛА:
+      - Переводи СМЫСЛ, а не слова. Адаптируй идиомы и сленг под русский язык.
+      - Используй естественный разговорный стиль русской мотожурналистики.
+      - Повествование от мужского лица (я поехал, я попробовал, я увидел).
+      - Названия брендов и моделей мотоциклов оставляй на английском (Yamaha YZF-R1, Ducati Panigale, Stark Varg).
+      - Единицы измерения переводи в метрические, если они в имперских.
+      - НЕ добавляй комментариев, пояснений, преамбул — верни ТОЛЬКО перевод.
+      - Сохраняй абзацы и структуру оригинала.
 
+      ГЛОССАРИЙ (используй эти термины):
+      - trike = трайк
+      - lane splitting = езда между рядов
+      - lane filtering = фильтрация в потоке
+      - shoulder (road) = обочина
+      - shoulder riding = езда по обочине
+      - torque = крутящий момент
+      - horsepower / hp = лошадиных сил / л.с.
+      - naked bike = нейкед
+      - sportbike = спортбайк
+      - cruiser = круизер
+      - adventure bike = эндуро-турер / адвенчур
+      - dual-sport = эндуро
+      - touring = туринг / турер
+      - scrambler = скрэмблер
+      - wheelie = вилли
+      - stoppie = стоппи
+      - lowside = лоусайд
+      - highside = хайсайд
+      - lean angle = угол наклона
+      - cornering = прохождение поворотов
+      - throttle = газ / ручка газа
+      - clutch = сцепление
+      - fairing = обтекатель
+      - swingarm = маятник
+      - rear sets = подножки
+      - track day = трек-день
+      - brain rot (slang) = помешательство / мотопомешательство
+      - rider = мотоциклист / райдер
+      - gear (equipment) = экипировка
+      - winglet = винглет / аэродинамический элемент
+      - MotoGP aero = аэродинамика MotoGP
+    title_prompt: |
+      Ты — редактор русскоязычного мотоциклетного медиа.
+      Переведи заголовок статьи на русский язык.
 
+      ПРАВИЛА:
+      - Заголовок должен быть цепляющим и естественным для русского читателя.
+      - НЕ переводи дословно — адаптируй смысл.
+      - Сленг и идиомы заменяй русскими эквивалентами.
+      - Названия брендов и моделей оставляй на английском.
+      - Максимум 15 слов.
+      - Верни ТОЛЬКО переведённый заголовок, без кавычек и пояснений.
+  deepl:
+    # api_key: set via DEEPL_API_KEY env var or here
+    free: true  # true = free API (api-free.deepl.com), false = paid API
   libretranslate:
     host: http://localhost:5050
 

@@ -25,13 +25,23 @@ type SourceConfig struct {
 type TranslatorConfig struct {
 	Provider       string               `mapstructure:"provider"`
 	Ollama         OllamaConfig         `mapstructure:"ollama"`
+	DeepL          DeepLConfig          `mapstructure:"deepl"`
 	LibreTranslate LibreTranslateConfig `mapstructure:"libretranslate"`
 }
 
 type OllamaConfig struct {
-	Model  string `mapstructure:"model"`
-	Host   string `mapstructure:"host"`
-	Prompt string `mapstructure:"prompt"`
+	Model       string  `mapstructure:"model"`
+	Host        string  `mapstructure:"host"`
+	Prompt      string  `mapstructure:"prompt"`
+	TitlePrompt string  `mapstructure:"title_prompt"`
+	Temperature float64 `mapstructure:"temperature"`
+	TopP        float64 `mapstructure:"top_p"`
+	NumCtx      int     `mapstructure:"num_ctx"`
+}
+
+type DeepLConfig struct {
+	APIKey string `mapstructure:"api_key"`
+	Free   bool   `mapstructure:"free"`
 }
 
 type LibreTranslateConfig struct {
@@ -75,13 +85,10 @@ func Load(configPath string) (*Config, error) {
 	viper.SetDefault("translator.provider", "ollama")
 	viper.SetDefault("translator.ollama.model", "gemma2:9b")
 	viper.SetDefault("translator.ollama.host", "http://localhost:11434")
-	viper.SetDefault("translator.ollama.prompt", `Переведи следующую статью о мотоциклах на русский язык.
-Сохрани технические термины и названия моделей мотоциклов на английском.
-Используй профессиональную мотожурналистскую стилистику.
-Не добавляй никаких комментариев, верни только перевод.
-
-Статья:
-`)
+	viper.SetDefault("translator.ollama.temperature", 0.15)
+	viper.SetDefault("translator.ollama.top_p", 0.9)
+	viper.SetDefault("translator.ollama.num_ctx", 8192)
+	viper.SetDefault("translator.deepl.free", true)
 	viper.SetDefault("translator.libretranslate.host", "http://localhost:5000")
 	viper.SetDefault("hugo.path", "./blog")
 	viper.SetDefault("hugo.content_dir", "content")
