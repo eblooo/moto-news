@@ -10,9 +10,12 @@ Requirements:
     - pip install -r requirements.txt
 """
 
+from __future__ import annotations
+
 import argparse
 import sys
 from datetime import datetime
+from typing import Optional
 
 from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
@@ -81,7 +84,7 @@ URL: {url}
     return chain
 
 
-def run_assessment(url: str, config_path: str | None = None) -> str:
+def run_assessment(url: str, config_path: Optional[str] = None) -> str:
     """Run site assessment and return the analysis."""
     cfg = load_config(config_path)
 

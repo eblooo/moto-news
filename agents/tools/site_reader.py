@@ -3,8 +3,11 @@ Tool for reading and analyzing the blog site.
 Fetches pages, extracts content, analyzes structure.
 """
 
+from __future__ import annotations
+
 import re
 from dataclasses import dataclass
+from typing import List
 
 import httpx
 from bs4 import BeautifulSoup
@@ -16,9 +19,9 @@ class PageInfo:
     url: str
     title: str
     content: str
-    links: list[str]
+    links: List[str]
     meta_description: str
-    headings: list[str]
+    headings: List[str]
     word_count: int
 
 

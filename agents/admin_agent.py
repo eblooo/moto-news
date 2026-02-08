@@ -18,6 +18,8 @@ Requirements:
     - Local clone of the blog repository
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
@@ -26,7 +28,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Dict, List, Literal
 
 import structlog
 from langchain_ollama import ChatOllama
@@ -50,12 +52,12 @@ log = structlog.get_logger()
 class AdminState(TypedDict):
     """State for the admin agent workflow."""
     site_snapshot: str
-    discussions: list[dict]
+    discussions: List[Dict]
     analysis: str
-    proposed_changes: list[dict]  # [{file: str, action: str, content: str}]
+    proposed_changes: List[Dict]  # [{file: str, action: str, content: str}]
     approval_status: str  # "pending", "approved", "rejected"
     commit_result: str
-    errors: list[str]
+    errors: List[str]
     messages: Annotated[list, add_messages]
 
 

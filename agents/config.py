@@ -3,9 +3,12 @@ Configuration for AI agents.
 Loads settings from environment variables and/or config file.
 """
 
+from __future__ import annotations
+
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 import yaml
 
@@ -42,7 +45,7 @@ class AgentConfig:
     log_level: str = "INFO"
 
 
-def load_config(config_path: str | None = None) -> AgentConfig:
+def load_config(config_path: Optional[str] = None) -> AgentConfig:
     """Load configuration from YAML file and environment variables."""
     cfg = AgentConfig()
 

@@ -15,6 +15,8 @@ Requirements:
     - pip install -r requirements.txt
 """
 
+from __future__ import annotations
+
 import argparse
 import sys
 import time

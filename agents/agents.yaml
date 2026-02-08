@@ -2,10 +2,10 @@
 # Copy to agents.yaml and adjust for your environment
 
 ollama:
-  host: http://ollama:11434          # K8s service name
-  user_model: llama3.2:3b            # Fast model for user-agent (~20 tok/s on CPU)
-  admin_model: deepseek-r1:8b        # Strong reasoning for admin-agent (~8 tok/s)
-  coder_model: qwen2.5-coder:7b     # Code analysis (~10 tok/s)
+  host: http://localhost:11434       # Local dev; use http://ollama:11434 in K8s
+  user_model: llama3.2:3b             # Supports tool calling (3.2B, fast)
+  admin_model: llama3.2:3b           # Supports tool calling (swap to deepseek-r1:8b in prod)
+  coder_model: gemma3:latest         # For analysis (4.3B, no tools needed)
   temperature: 0.35
   num_ctx: 8192
 

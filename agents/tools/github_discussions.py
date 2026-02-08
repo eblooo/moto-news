@@ -3,8 +3,11 @@ Tool for interacting with GitHub Discussions.
 Reads and writes comments in the "For Developers" category.
 """
 
+from __future__ import annotations
+
 import os
 from dataclasses import dataclass
+from typing import Dict, Optional
 
 import httpx
 from langchain_core.tools import tool
@@ -45,7 +48,7 @@ def _get_headers() -> dict:
     }
 
 
-def _graphql_query(query: str, variables: dict | None = None) -> dict:
+def _graphql_query(query: str, variables: Optional[Dict] = None) -> dict:
     """Execute a GraphQL query against GitHub API."""
     payload = {"query": query}
     if variables:
