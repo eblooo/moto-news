@@ -32,7 +32,7 @@ spec:
                 - /tmp/assessment-report.md
               env:
                 - name: OLLAMA_HOST
-                  value: "http://ollama:11434"
+                  value: "http://host.cni.cncf.io:11434"
               volumeMounts:
                 - name: config
                   mountPath: /app/config

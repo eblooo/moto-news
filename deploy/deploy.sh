@@ -3,11 +3,15 @@
 # Deploy moto-news stack to microk8s
 # ===================================================
 # Usage:
-#   ./deploy.sh [all|ollama|aggregator|agents]
+#   ./deploy.sh [all|aggregator|agents|models|status]
+#
+# Ollama runs on the HOST (not in K8s).
+# K8s pods access it via host.cni.cncf.io:11434
 #
 # Prerequisites:
 #   - microk8s installed and running
 #   - microk8s addons: dns, storage, registry
+#   - Ollama installed and running on the host
 # ===================================================
 
 set -euo pipefail
@@ -41,6 +45,26 @@ check_prerequisites() {
     if ! microk8s status --wait-ready &> /dev/null; then
         log_error "microk8s is not running. Start it: microk8s start"
         exit 1
+    fi
+
+    # Check Ollama on host
+    if curl -s http://localhost:11434/ > /dev/null 2>&1; then
+        log_ok "Ollama is running on host"
+    else
+        log_warn "Ollama not detected on localhost:11434"
+        log_warn "Install: curl -fsSL https://ollama.com/install.sh | sh"
+        log_warn "Start:   systemctl start ollama  (or: ollama serve)"
+    fi
+
+    # Ensure Ollama listens on all interfaces (for K8s pods)
+    if systemctl is-active ollama > /dev/null 2>&1; then
+        if ! grep -q "OLLAMA_HOST=0.0.0.0" /etc/systemd/system/ollama.service.d/override.conf 2>/dev/null; then
+            log_warn "Ollama may only listen on localhost."
+            log_warn "For K8s pods to reach it, run:"
+            log_warn "  sudo mkdir -p /etc/systemd/system/ollama.service.d"
+            log_warn "  echo -e '[Service]\nEnvironment=OLLAMA_HOST=0.0.0.0' | sudo tee /etc/systemd/system/ollama.service.d/override.conf"
+            log_warn "  sudo systemctl daemon-reload && sudo systemctl restart ollama"
+        fi
     fi
 
     # Enable required addons
@@ -80,26 +104,41 @@ deploy_namespace() {
     log_ok "Namespace created"
 }
 
-# ===== Deploy Ollama =====
-deploy_ollama() {
-    log_info "Deploying Ollama..."
-    microk8s kubectl apply -f "$K8S_DIR/ollama/service.yaml"
-    microk8s kubectl apply -f "$K8S_DIR/ollama/statefulset.yaml"
+# ===== Pull models on host Ollama =====
+pull_models() {
+    log_info "Pulling models on host Ollama..."
 
-    log_info "Waiting for Ollama to be ready..."
-    microk8s kubectl -n moto-news rollout status statefulset/ollama --timeout=300s
+    if ! curl -s http://localhost:11434/ > /dev/null 2>&1; then
+        log_error "Ollama is not running on host. Start it first."
+        return 1
+    fi
 
-    log_info "Pulling initial models (this will take a while on first run)..."
-    microk8s kubectl apply -f "$K8S_DIR/ollama/init-models.yaml" 2>/dev/null || true
+    for model in "llama3.2:3b" "qwen2.5-coder:7b" "deepseek-r1:8b"; do
+        log_info "Pulling $model ..."
+        curl -s http://localhost:11434/api/pull -d "{\"name\": \"$model\"}" | \
+            while IFS= read -r line; do
+                status=$(echo "$line" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status',''))" 2>/dev/null || true)
+                if [ -n "$status" ]; then
+                    printf "\r  %s: %s          " "$model" "$status"
+                fi
+            done
+        echo ""
+        log_ok "$model pulled"
+    done
 
-    log_ok "Ollama deployed"
+    log_info "Available models:"
+    curl -s http://localhost:11434/api/tags | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+for m in d['models']:
+    print(f\"  {m['name']:30s} {m['details']['parameter_size']:>8s}  {m['details']['quantization_level']}\")
+" 2>/dev/null || true
 }
 
 # ===== Deploy Aggregator =====
 deploy_aggregator() {
     log_info "Deploying Aggregator..."
 
-    # Update image reference to local registry
     microk8s kubectl apply -f "$K8S_DIR/aggregator/configmap.yaml"
     microk8s kubectl apply -f "$K8S_DIR/aggregator/pvc.yaml"
     microk8s kubectl apply -f "$K8S_DIR/aggregator/service.yaml"
@@ -150,9 +189,25 @@ show_status() {
     echo ""
     microk8s kubectl -n moto-news get pvc
     echo ""
+
+    log_info "=== Ollama (host) ==="
+    if curl -s http://localhost:11434/ > /dev/null 2>&1; then
+        echo "  Status: running"
+        curl -s http://localhost:11434/api/tags | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+for m in d['models']:
+    print(f\"  Model: {m['name']} ({m['details']['parameter_size']})\")
+" 2>/dev/null || true
+    else
+        echo "  Status: NOT RUNNING"
+    fi
+    echo ""
+
     log_info "=== Access ==="
     echo "  Aggregator API: http://<server-ip>:30080"
     echo "  Health check:   curl http://localhost:30080/health"
+    echo "  Ollama:         http://localhost:11434"
     echo ""
 }
 
@@ -165,14 +220,9 @@ case "$COMPONENT" in
     all)
         build_images
         deploy_namespace
-        deploy_ollama
         deploy_aggregator
         deploy_agents
         show_status
-        ;;
-    ollama)
-        deploy_namespace
-        deploy_ollama
         ;;
     aggregator)
         build_images
@@ -184,11 +234,14 @@ case "$COMPONENT" in
         deploy_namespace
         deploy_agents
         ;;
+    models)
+        pull_models
+        ;;
     status)
         show_status
         ;;
     *)
-        echo "Usage: $0 [all|ollama|aggregator|agents|status]"
+        echo "Usage: $0 [all|aggregator|agents|models|status]"
         exit 1
         ;;
 esac

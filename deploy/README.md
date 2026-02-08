@@ -7,28 +7,31 @@
 ## Архитектура
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    microk8s (namespace: moto-news)       │
-│                                                          │
-│  ┌──────────────┐    ┌──────────────┐    ┌───────────┐  │
-│  │   Ollama      │    │  Aggregator  │    │  Agents   │  │
-│  │  StatefulSet  │◄───│  Deployment  │    │  CronJobs │  │
-│  │              │    │              │    │           │  │
-│  │ llama3.2:3b  │◄───│ Go HTTP API  │    │ Python    │  │
-│  │ qwen2.5:7b   │    │ Port: 8080   │    │ LangChain │  │
-│  │ deepseek:8b  │    │              │    │ LangGraph │  │
-│  └──────┬───────┘    └──────┬───────┘    └─────┬─────┘  │
-│         │                   │                   │        │
-│         │            ┌──────┴───────┐           │        │
-│         │            │  SQLite DB   │           │        │
-│         │            │  PVC: 2Gi    │           │        │
-│         │            └──────────────┘           │        │
-│         │                                       │        │
-│    ┌────┴────┐                          ┌──────┴──────┐ │
-│    │ PVC:20Gi│                          │GitHub Disc. │ │
-│    │ Models  │                          │(API)        │ │
-│    └─────────┘                          └─────────────┘ │
-└─────────────────────────────────────────────────────────┘
+  ┌─────────────────┐
+  │  Ollama (host)   │   ← запущена на хосте, не в K8s
+  │  llama3.2:3b     │
+  │  qwen2.5:7b      │
+  │  deepseek:8b     │
+  │  :11434          │
+  └────────┬─────────┘
+           │ host.cni.cncf.io:11434
+┌──────────┼──────────────────────────────────────────┐
+│  microk8s│(namespace: moto-news)                     │
+│          │                                           │
+│  ┌───────┴──────┐    ┌───────────┐                  │
+│  │  Aggregator  │    │  Agents   │                  │
+│  │  Deployment  │    │  CronJobs │                  │
+│  │              │    │           │                  │
+│  │ Go HTTP API  │    │ Python    │                  │
+│  │ Port: 8080   │    │ LangChain │                  │
+│  │              │    │ LangGraph │                  │
+│  └──────┬───────┘    └─────┬─────┘                  │
+│         │                   │                        │
+│  ┌──────┴───────┐   ┌──────┴──────┐                 │
+│  │  SQLite DB   │   │GitHub Disc. │                 │
+│  │  PVC: 2Gi    │   │(API)        │                 │
+│  └──────────────┘   └─────────────┘                 │
+└─────────────────────────────────────────────────────┘
          │                      │
          ▼                      ▼
    blog.alimov.top       GitHub Pages
@@ -45,7 +48,26 @@ sudo usermod -aG microk8s $USER
 newgrp microk8s
 ```
 
-### 2. Включить необходимые аддоны
+### 2. Установить и настроить Ollama
+
+```bash
+# Установка
+curl -fsSL https://ollama.com/install.sh | sh
+
+# Настроить прослушивание на всех интерфейсах (для K8s pods)
+sudo mkdir -p /etc/systemd/system/ollama.service.d
+echo -e '[Service]\nEnvironment=OLLAMA_HOST=0.0.0.0' | \
+    sudo tee /etc/systemd/system/ollama.service.d/override.conf
+sudo systemctl daemon-reload
+sudo systemctl restart ollama
+
+# Загрузить модели
+ollama pull llama3.2:3b
+ollama pull qwen2.5-coder:7b
+ollama pull deepseek-r1:8b
+```
+
+### 3. Включить необходимые аддоны
 
 ```bash
 microk8s enable dns storage registry
@@ -55,7 +77,7 @@ microk8s enable dns storage registry
 - **storage** — динамическое выделение PersistentVolumes
 - **registry** — локальный Docker registry (localhost:32000)
 
-### 3. Установить Docker (для сборки образов)
+### 4. Установить Docker (для сборки образов)
 
 ```bash
 sudo apt install docker.io
@@ -89,21 +111,17 @@ cd moto-news
 microk8s kubectl apply -f deploy/k8s/base/namespace.yaml
 ```
 
-### Шаг 2: Ollama
+### Шаг 2: Ollama (на хосте)
 
 ```bash
-# Деплой
-microk8s kubectl apply -f deploy/k8s/ollama/
+# Убедиться что Ollama запущена
+systemctl status ollama
 
-# Дождаться готовности
-microk8s kubectl -n moto-news rollout status statefulset/ollama
-
-# Загрузить модели (запуск Job)
-microk8s kubectl apply -f deploy/k8s/ollama/init-models.yaml
-
-# Проверить загрузку моделей
-microk8s kubectl -n moto-news logs job/ollama-init-models -f
+# Загрузить модели (если ещё не загружены)
+./deploy/deploy.sh models
 ```
+
+K8s pods обращаются к Ollama через `host.cni.cncf.io:11434`.
 
 ### Шаг 3: Aggregator
 
@@ -190,7 +208,7 @@ deploy/
 └── k8s/
     ├── base/
     │   └── namespace.yaml
-    ├── ollama/
+    ├── ollama/                     # (опционально, если Ollama в K8s)
     │   ├── statefulset.yaml    # Ollama с PVC для моделей
     │   ├── service.yaml        # ClusterIP сервис
     │   └── init-models.yaml    # Job для загрузки моделей

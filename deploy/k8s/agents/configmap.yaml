@@ -8,7 +8,7 @@ metadata:
 data:
   agents.yaml: |
     ollama:
-      host: http://ollama:11434
+      host: http://host.cni.cncf.io:11434   # Ollama on host (microk8s)
       user_model: llama3.2:3b
       admin_model: deepseek-r1:8b
       coder_model: qwen2.5-coder:7b

@@ -23,7 +23,7 @@ data:
         # qwen2.5-coder:7b — slower (~8 tok/s), better quality  
         # translategemma:12b — very slow on CPU (~3 tok/s), best quality
         model: qwen2.5-coder:7b
-        host: http://ollama:11434
+        host: http://host.cni.cncf.io:11434   # Ollama on host (microk8s)
         prompt: |
           You are a professional English (en) to Russian (ru) translator. Your goal is to accurately convey the meaning and nuances of the original English text while adhering to Russian grammar, vocabulary, and cultural sensitivities.
 
