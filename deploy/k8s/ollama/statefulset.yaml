@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ollama
+  namespace: moto-news
+  labels:
+    app: ollama
+spec:
+  serviceName: ollama
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ollama
+  template:
+    metadata:
+      labels:
+        app: ollama
+    spec:
+      containers:
+        - name: ollama
+          image: ollama/ollama:latest
+          ports:
+            - containerPort: 11434
+              name: http
+          resources:
+            requests:
+              cpu: "1000m"
+              memory: "4Gi"
+            limits:
+              cpu: "4000m"
+              memory: "16Gi"   # Enough for 3b-7b models on CPU
+          volumeMounts:
+            - name: ollama-data
+              mountPath: /root/.ollama
+          env:
+            - name: OLLAMA_HOST
+              value: "0.0.0.0"
+            # CPU-only optimizations for Intel i5-4590
+            - name: OLLAMA_NUM_PARALLEL
+              value: "1"
+            - name: OLLAMA_MAX_LOADED_MODELS
+              value: "1"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 11434
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 11434
+            initialDelaySeconds: 30
+            periodSeconds: 30
+  volumeClaimTemplates:
+    - metadata:
+        name: ollama-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 20Gi    # Space for model weights

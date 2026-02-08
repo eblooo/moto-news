@@ -1,0 +1,52 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aggregator-config
+  namespace: moto-news
+  labels:
+    app: aggregator
+data:
+  config.yaml: |
+    sources:
+      - name: rideapart
+        feeds:
+          - https://www.rideapart.com/rss/news/all/
+          - https://www.rideapart.com/rss/reviews/all/
+          - https://www.rideapart.com/rss/features/all/
+        enabled: true
+
+    translator:
+      provider: ollama
+      ollama:
+        # CPU-only server (i5-4590, 24GB RAM, no GPU):
+        # llama3.2:3b  — fast (~20 tok/s), decent quality
+        # qwen2.5-coder:7b — slower (~8 tok/s), better quality  
+        # translategemma:12b — very slow on CPU (~3 tok/s), best quality
+        model: qwen2.5-coder:7b
+        host: http://ollama:11434
+        prompt: |
+          You are a professional English (en) to Russian (ru) translator. Your goal is to accurately convey the meaning and nuances of the original English text while adhering to Russian grammar, vocabulary, and cultural sensitivities.
+
+          Produce only the Russian translation, without any additional explanations or commentary. Please translate the following English text into Russian:
+
+      libretranslate:
+        host: http://localhost:5050
+
+    database:
+      path: /app/data/moto-news.db
+
+    mkdocs:
+      path: /app/blog
+      docs_dir: docs
+      auto_commit: true
+      git_repo: https://github.com/KlimDos/my-blog.git
+      git_remote: origin
+      git_branch: main
+
+    server:
+      host: 0.0.0.0
+      port: 8080
+
+    schedule:
+      fetch_interval: 6h
+      translate_batch: 5

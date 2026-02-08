@@ -1,0 +1,10 @@
+.git
+*.db
+blog/.venv
+blog/site
+agents/__pycache__
+agents/.venv
+*.pyc
+.cursor
+promt.md
+README.md

@@ -1,0 +1,54 @@
+# Job to pre-pull recommended models for CPU-only server (24GB RAM, no GPU)
+# Run after Ollama is deployed: kubectl apply -f init-models.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ollama-init-models
+  namespace: moto-news
+  labels:
+    app: ollama
+    component: init
+spec:
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: init-models
+          image: curlimages/curl:latest
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "=== Waiting for Ollama to be ready ==="
+              until curl -s http://ollama:11434/ > /dev/null 2>&1; do
+                echo "Waiting for Ollama..."
+                sleep 5
+              done
+              echo "Ollama is ready!"
+
+              echo ""
+              echo "=== Pulling llama3.2:3b (fast user-agent, ~2GB) ==="
+              curl -s http://ollama:11434/api/pull -d '{"name": "llama3.2:3b"}' | head -c 500
+              echo ""
+
+              echo ""
+              echo "=== Pulling qwen2.5-coder:7b (main translation/coding, ~4.5GB) ==="
+              curl -s http://ollama:11434/api/pull -d '{"name": "qwen2.5-coder:7b"}' | head -c 500
+              echo ""
+
+              echo ""
+              echo "=== Pulling deepseek-r1:8b (strong reasoning for admin agent, ~5GB) ==="
+              curl -s http://ollama:11434/api/pull -d '{"name": "deepseek-r1:8b"}' | head -c 500
+              echo ""
+
+              echo ""
+              echo "=== All models pulled successfully ==="
+              curl -s http://ollama:11434/api/tags | head -c 1000
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+            limits:
+              cpu: "500m"
+              memory: "128Mi"

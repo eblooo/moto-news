@@ -1,5 +1,6 @@
 # Binaries
-aggregator
+/aggregator
+bin/
 *.exe
 
 # Database
@@ -21,3 +22,16 @@ Thumbs.db
 
 # Build
 /site/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+agents/.venv/
+
+# Blog (separate repo: KlimDos/my-blog)
+blog/
+
+# Secrets (never commit real tokens)
+.env
+*.secret

@@ -1,0 +1,25 @@
+# AI Agents for blog.alimov.top
+# Python 3.11+
+
+# LLM / Agent framework
+langchain>=0.3.0
+langchain-ollama>=0.3.0
+langchain-core>=0.3.0
+langgraph>=0.3.0
+
+# Web scraping / site analysis
+beautifulsoup4>=4.12.0
+requests>=2.31.0
+httpx>=0.27.0
+
+# GitHub API
+PyGithub>=2.3.0
+
+# Utilities
+pyyaml>=6.0
+python-dotenv>=1.0.0
+schedule>=1.2.0
+structlog>=24.0.0
+
+# Markdown processing
+markdown>=3.5.0

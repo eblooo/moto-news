@@ -1,0 +1,63 @@
+# CronJob for periodic pipeline execution (fetch + translate + publish)
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: aggregator-pipeline
+  namespace: moto-news
+  labels:
+    app: aggregator
+    component: pipeline
+spec:
+  schedule: "0 */6 * * *"     # Every 6 hours
+  concurrencyPolicy: Forbid    # Don't start if previous is still running
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 7200  # 2 hour timeout (translation is slow on CPU)
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: pipeline
+              image: curlimages/curl:latest
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  echo "=== Starting moto-news pipeline ==="
+                  echo "Time: $(date)"
+
+                  echo ""
+                  echo "--- Step 1: Fetch new articles ---"
+                  curl -s -X POST http://aggregator:8080/api/fetch | head -c 1000
+                  echo ""
+
+                  echo ""
+                  echo "--- Step 2: Translate articles (limit=5 for CPU) ---"
+                  curl -s -X POST "http://aggregator:8080/api/translate?limit=5" --max-time 3600
+                  echo ""
+
+                  echo ""
+                  echo "--- Step 3: Publish to MkDocs ---"
+                  curl -s -X POST "http://aggregator:8080/api/publish?limit=50"
+                  echo ""
+
+                  echo ""
+                  echo "--- Step 4: Push to Git ---"
+                  curl -s -X POST http://aggregator:8080/api/push
+                  echo ""
+
+                  echo ""
+                  echo "--- Stats ---"
+                  curl -s http://aggregator:8080/api/stats
+                  echo ""
+                  echo ""
+                  echo "=== Pipeline complete ==="
+              resources:
+                requests:
+                  cpu: "50m"
+                  memory: "32Mi"
+                limits:
+                  cpu: "200m"
+                  memory: "64Mi"

@@ -1,0 +1,49 @@
+# User Agent CronJob — runs every 2 hours
+# Reads the site, analyzes content, posts suggestions to GitHub Discussions
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: user-agent
+  namespace: moto-news
+  labels:
+    app: agents
+    component: user-agent
+spec:
+  schedule: "0 */2 * * *"           # Every 2 hours
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 5
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 1800    # 30 min timeout
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: user-agent
+              image: moto-news-agents:latest
+              imagePullPolicy: IfNotPresent
+              command: ["python", "user_agent.py", "--once", "--config", "/app/config/agents.yaml"]
+              env:
+                - name: GITHUB_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: github-token
+                      key: GITHUB_TOKEN
+                - name: OLLAMA_HOST
+                  value: "http://ollama:11434"
+              volumeMounts:
+                - name: config
+                  mountPath: /app/config
+                  readOnly: true
+              resources:
+                requests:
+                  cpu: "100m"
+                  memory: "256Mi"
+                limits:
+                  cpu: "500m"
+                  memory: "512Mi"
+          volumes:
+            - name: config
+              configMap:
+                name: agents-config

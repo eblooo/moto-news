@@ -1,0 +1,22 @@
+# AI Agents Configuration
+# Copy to agents.yaml and adjust for your environment
+
+ollama:
+  host: http://ollama:11434          # K8s service name
+  user_model: llama3.2:3b            # Fast model for user-agent (~20 tok/s on CPU)
+  admin_model: deepseek-r1:8b        # Strong reasoning for admin-agent (~8 tok/s)
+  coder_model: qwen2.5-coder:7b     # Code analysis (~10 tok/s)
+  temperature: 0.35
+  num_ctx: 8192
+
+github:
+  # token: set via GITHUB_TOKEN env var
+  repo: KlimDos/my-blog
+  discussions_category: For Developers
+
+site:
+  url: https://blog.alimov.top
+  # repo_path: set via BLOG_REPO_PATH env var
+
+schedule_interval_minutes: 60
+log_level: INFO
