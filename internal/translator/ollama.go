@@ -35,7 +35,7 @@ func NewOllamaTranslator(host, model, prompt string) *OllamaTranslator {
 		model:  model,
 		prompt: prompt,
 		client: &http.Client{
-			Timeout: 5 * time.Minute, // Long timeout for translation
+			Timeout: 30 * time.Minute, // Long timeout for large models
 		},
 	}
 }
@@ -51,12 +51,7 @@ func (t *OllamaTranslator) Translate(ctx context.Context, text string) (string, 
 }
 
 func (t *OllamaTranslator) TranslateTitle(ctx context.Context, title string) (string, error) {
-	titlePrompt := `Переведи заголовок статьи о мотоциклах на русский язык.
-Сохрани названия моделей и брендов на английском.
-Верни только перевод заголовка, без пояснений.
-
-Заголовок: ` + title
-
+	titlePrompt := t.prompt + title
 	return t.generate(ctx, titlePrompt)
 }
 

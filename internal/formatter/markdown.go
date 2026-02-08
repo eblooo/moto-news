@@ -21,7 +21,7 @@ func (f *MarkdownFormatter) Format(article *models.Article) string {
 
 	// Frontmatter
 	sb.WriteString("---\n")
-	sb.WriteString(fmt.Sprintf("date: %s\n", article.PublishedAt.Format("2006-01-02")))
+	sb.WriteString(fmt.Sprintf("date:\n  created: %s\n", article.PublishedAt.Format("2006-01-02T15:04:05")))
 
 	// Categories
 	sb.WriteString("categories:\n")
@@ -99,30 +99,31 @@ func (f *MarkdownFormatter) GetFilePath(article *models.Article, baseDir string)
 		slug = fmt.Sprintf("article-%d", article.ID)
 	}
 
-	return filepath.Join(baseDir, year, month, slug+".md")
+	// For MkDocs blog plugin: posts/YYYY/MM/slug.md
+	return filepath.Join(baseDir, "posts", year, month, slug+".md")
 }
 
 // translateCategory translates common categories to Russian
 func (f *MarkdownFormatter) translateCategory(category string) string {
 	translations := map[string]string{
-		"news":                  "Новости",
-		"reviews":               "Обзоры",
-		"features":              "Статьи",
-		"sportbikes":            "Спортбайки",
-		"cruisers":              "Круизеры",
-		"adventure":             "Эндуро",
-		"touring":               "Туринг",
-		"naked":                 "Нейкеды",
-		"electric":              "Электромотоциклы",
-		"racing":                "Гонки",
-		"gear":                  "Экипировка",
-		"technology":            "Технологии",
-		"industry":              "Индустрия",
-		"custom":                "Кастом",
-		"adventure-and-dual-sport": "Эндуро",
+		"news":                      "Новости",
+		"reviews":                   "Обзоры",
+		"features":                  "Статьи",
+		"sportbikes":                "Спортбайки",
+		"cruisers":                  "Круизеры",
+		"adventure":                 "Эндуро",
+		"touring":                   "Туринг",
+		"naked":                     "Нейкеды",
+		"electric":                  "Электромотоциклы",
+		"racing":                    "Гонки",
+		"gear":                      "Экипировка",
+		"technology":                "Технологии",
+		"industry":                  "Индустрия",
+		"custom":                    "Кастом",
+		"adventure-and-dual-sport":  "Эндуро",
 		"touring-and-sport-touring": "Туринг",
-		"standard-and-naked":    "Нейкеды",
-		"electric-motorcycles":  "Электромотоциклы",
+		"standard-and-naked":        "Нейкеды",
+		"electric-motorcycles":      "Электромотоциклы",
 	}
 
 	lower := strings.ToLower(category)

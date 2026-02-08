@@ -119,7 +119,10 @@ func (s *SQLiteStorage) UpdateArticle(article *models.Article) error {
 		translated_at = ?,
 		published_to_mkdocs = ?,
 		slug = ?,
-		content = ?
+		content = ?,
+		tags = ?,
+		category = ?,
+		image_url = ?
 	WHERE id = ?
 	`
 	_, err := s.db.Exec(query,
@@ -129,6 +132,9 @@ func (s *SQLiteStorage) UpdateArticle(article *models.Article) error {
 		article.PublishedToMkDocs,
 		article.Slug,
 		article.Content,
+		article.TagsJSON(),
+		article.Category,
+		article.ImageURL,
 		article.ID,
 	)
 	return err
@@ -186,6 +192,32 @@ func (s *SQLiteStorage) GetUnpublishedArticles(limit int) ([]*models.Article, er
 
 // GetRecentArticles returns the most recent articles
 func (s *SQLiteStorage) GetRecentArticles(limit int) ([]*models.Article, error) {
+	query := `
+	SELECT id, source_url, source_site, title, title_ru, description, content, content_ru,
+		author, category, tags, image_url, published_at, fetched_at, translated_at,
+		published_to_mkdocs, slug
+	FROM articles 
+	ORDER BY fetched_at DESC
+	LIMIT ?
+	`
+	return s.scanArticles(query, limit)
+}
+
+// GetArticlesWithEmptyContent returns articles where content is empty or too short (scraping failed/incomplete)
+func (s *SQLiteStorage) GetArticlesWithEmptyContent() ([]*models.Article, error) {
+	query := `
+	SELECT id, source_url, source_site, title, title_ru, description, content, content_ru,
+		author, category, tags, image_url, published_at, fetched_at, translated_at,
+		published_to_mkdocs, slug
+	FROM articles 
+	WHERE content = '' OR content IS NULL OR LENGTH(content) < 1000 OR category = ''
+	ORDER BY fetched_at DESC
+	`
+	return s.scanArticles(query)
+}
+
+// GetAllArticles returns all articles (with optional limit)
+func (s *SQLiteStorage) GetAllArticles(limit int) ([]*models.Article, error) {
 	query := `
 	SELECT id, source_url, source_site, title, title_ru, description, content, content_ru,
 		author, category, tags, image_url, published_at, fetched_at, translated_at,

@@ -7,17 +7,16 @@ sources:
     enabled: true
 
 translator:
-  provider: libretranslate #ollama  # or "libretranslate"
+  provider: ollama  # or "libretranslate"
   ollama:
-    model: gemma2:9b
+    model: translategemma:12b
     host: http://localhost:11434
     prompt: |
-      Переведи следующую статью о мотоциклах на русский язык.
-      Сохрани технические термины и названия моделей мотоциклов на английском.
-      Используй профессиональную мотожурналистскую стилистику.
-      Не добавляй никаких комментариев, верни только перевод.
+      You are a professional English (en) to Russian (ru) translator. Your goal is to accurately convey the meaning and nuances of the original English text while adhering to Russian grammar, vocabulary, and cultural sensitivities.
 
-      Статья:
+      Produce only the Russian translation, without any additional explanations or commentary. Please translate the following English text into Russian:
+
+
   libretranslate:
     host: http://localhost:5050
 
@@ -26,12 +25,16 @@ database:
 
 mkdocs:
   path: ./blog
-  docs_dir: docs/news
+  docs_dir: docs
   auto_commit: true
   git_repo: https://github.com/KlimDos/my-blog.git
   git_remote: origin
   git_branch: main
 
+server:
+  host: 0.0.0.0
+  port: 8080
+
 schedule:
   fetch_interval: 6h
-  translate_batch: 10
+  translate_batch: 20

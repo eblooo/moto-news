@@ -13,6 +13,7 @@ type Config struct {
 	MkDocs     MkDocsConfig     `mapstructure:"mkdocs"`
 	Schedule   ScheduleConfig   `mapstructure:"schedule"`
 	Database   DatabaseConfig   `mapstructure:"database"`
+	Server     ServerConfig     `mapstructure:"server"`
 }
 
 type SourceConfig struct {
@@ -55,6 +56,11 @@ type DatabaseConfig struct {
 	Path string `mapstructure:"path"`
 }
 
+type ServerConfig struct {
+	Host string `mapstructure:"host"`
+	Port int    `mapstructure:"port"`
+}
+
 func Load(configPath string) (*Config, error) {
 	if configPath != "" {
 		viper.SetConfigFile(configPath)
@@ -85,6 +91,8 @@ func Load(configPath string) (*Config, error) {
 	viper.SetDefault("schedule.fetch_interval", "6h")
 	viper.SetDefault("schedule.translate_batch", 10)
 	viper.SetDefault("database.path", "./moto-news.db")
+	viper.SetDefault("server.host", "0.0.0.0")
+	viper.SetDefault("server.port", 8080)
 
 	// Default sources
 	viper.SetDefault("sources", []map[string]interface{}{
