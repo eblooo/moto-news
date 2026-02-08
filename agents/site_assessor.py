@@ -36,8 +36,8 @@ def create_assessment_chain(model: str, host: str, temperature: float = 0.35):
     )
 
     prompt = ChatPromptTemplate.from_messages([
-        ("system", """Ты эксперт по MkDocs, веб-разработке и UX.
-Ты анализируешь мотоциклетный блог на базе Material for MkDocs.
+        ("system", """Ты эксперт по Hugo, веб-разработке и UX.
+Ты анализируешь мотоциклетный блог на базе Hugo (тема PaperMod).
 
 Правила ответа:
 - Отвечай ТОЛЬКО на русском языке

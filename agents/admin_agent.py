@@ -5,7 +5,7 @@ Workflow (LangGraph state machine):
 1. assess_site   → snapshot of site + recent commits
 2. read_discussions → new comments in "For Developers" category
 3. analyze        → LLM decides what to implement
-4. generate_changes → creates diff / new .md / edits mkdocs.yml
+4. generate_changes → creates diff / new .md / edits hugo.toml
 5. human_approval  → waits for approval (file-based or API)
 6. commit          → git add/commit/push (only after approval)
 
@@ -166,7 +166,7 @@ def analyze(state: AdminState) -> dict:
     )
 
     prompt = ChatPromptTemplate.from_messages([
-        ("system", """Ты — Admin-агент для блога blog.alimov.top (MkDocs Material).
+        ("system", """Ты — Admin-агент для блога blog.alimov.top (Hugo PaperMod).
 Ты анализируешь состояние сайта и предложения из GitHub Discussions.
 Ты решаешь, какие изменения стоит внести.
 
@@ -186,7 +186,7 @@ def analyze(state: AdminState) -> dict:
 Если нет необходимых изменений, верни пустой массив: []
 
 ВАЖНО:
-- Предлагай только безопасные изменения (документация, конфигурация MkDocs, новые страницы)
+- Предлагай только безопасные изменения (документация, конфигурация Hugo, новые страницы)
 - НЕ предлагай изменения в код Python/Go приложений
 - Каждое изменение должно быть обосновано"""),
 

@@ -11,25 +11,25 @@ import (
 	"moto-news/internal/models"
 )
 
-type MkDocsPublisher struct {
-	config    *config.MkDocsConfig
+type HugoPublisher struct {
+	config    *config.HugoConfig
 	formatter *formatter.MarkdownFormatter
 }
 
-func NewMkDocsPublisher(cfg *config.MkDocsConfig) *MkDocsPublisher {
-	return &MkDocsPublisher{
+func NewHugoPublisher(cfg *config.HugoConfig) *HugoPublisher {
+	return &HugoPublisher{
 		config:    cfg,
 		formatter: formatter.NewMarkdownFormatter(),
 	}
 }
 
-// Publish publishes an article to the MkDocs site
-func (p *MkDocsPublisher) Publish(article *models.Article) error {
-	// Get the full docs path
-	docsPath := filepath.Join(p.config.Path, p.config.DocsDir)
+// Publish publishes an article to the Hugo site
+func (p *HugoPublisher) Publish(article *models.Article) error {
+	// Get the full content path
+	contentPath := filepath.Join(p.config.Path, p.config.ContentDir)
 
 	// Get the file path for this article
-	filePath := p.formatter.GetFilePath(article, docsPath)
+	filePath := p.formatter.GetFilePath(article, contentPath)
 
 	// Ensure directory exists
 	dir := filepath.Dir(filePath)
@@ -50,7 +50,7 @@ func (p *MkDocsPublisher) Publish(article *models.Article) error {
 }
 
 // PublishMultiple publishes multiple articles and optionally commits
-func (p *MkDocsPublisher) PublishMultiple(articles []*models.Article) error {
+func (p *HugoPublisher) PublishMultiple(articles []*models.Article) error {
 	for _, article := range articles {
 		if err := p.Publish(article); err != nil {
 			return err
@@ -65,15 +65,15 @@ func (p *MkDocsPublisher) PublishMultiple(articles []*models.Article) error {
 }
 
 // GitCommit commits changes to git
-func (p *MkDocsPublisher) GitCommit(message string) error {
-	// Change to mkdocs directory
+func (p *HugoPublisher) GitCommit(message string) error {
+	// Change to blog directory
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
 	}
 
 	if err := os.Chdir(p.config.Path); err != nil {
-		return fmt.Errorf("failed to change to mkdocs directory: %w", err)
+		return fmt.Errorf("failed to change to blog directory: %w", err)
 	}
 	defer os.Chdir(cwd)
 
@@ -106,7 +106,7 @@ func (p *MkDocsPublisher) GitCommit(message string) error {
 }
 
 // GitPull pulls latest changes from remote
-func (p *MkDocsPublisher) GitPull() error {
+func (p *HugoPublisher) GitPull() error {
 	gitDir := filepath.Join(p.config.Path, ".git")
 
 	// Check if .git directory exists (it's a git repo)
@@ -139,7 +139,7 @@ func (p *MkDocsPublisher) GitPull() error {
 	}
 
 	if err := os.Chdir(p.config.Path); err != nil {
-		return fmt.Errorf("failed to change to mkdocs directory: %w", err)
+		return fmt.Errorf("failed to change to blog directory: %w", err)
 	}
 	defer os.Chdir(cwd)
 
@@ -154,14 +154,14 @@ func (p *MkDocsPublisher) GitPull() error {
 }
 
 // GitPush pushes changes to remote
-func (p *MkDocsPublisher) GitPush() error {
+func (p *HugoPublisher) GitPush() error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
 	}
 
 	if err := os.Chdir(p.config.Path); err != nil {
-		return fmt.Errorf("failed to change to mkdocs directory: %w", err)
+		return fmt.Errorf("failed to change to blog directory: %w", err)
 	}
 	defer os.Chdir(cwd)
 
@@ -174,7 +174,7 @@ func (p *MkDocsPublisher) GitPush() error {
 	return nil
 }
 
-// GetDocsPath returns the full path to the docs directory
-func (p *MkDocsPublisher) GetDocsPath() string {
-	return filepath.Join(p.config.Path, p.config.DocsDir)
+// GetContentPath returns the full path to the content directory
+func (p *HugoPublisher) GetContentPath() string {
+	return filepath.Join(p.config.Path, p.config.ContentDir)
 }

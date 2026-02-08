@@ -15,13 +15,22 @@ func NewMarkdownFormatter() *MarkdownFormatter {
 	return &MarkdownFormatter{}
 }
 
-// Format converts an article to MkDocs-compatible markdown
+// Format converts an article to Hugo-compatible markdown
 func (f *MarkdownFormatter) Format(article *models.Article) string {
 	var sb strings.Builder
 
+	// Title
+	title := article.TitleRU
+	if title == "" {
+		title = article.Title
+	}
+	// Escape quotes in title for YAML
+	escapedTitle := strings.ReplaceAll(title, `"`, `\"`)
+
 	// Frontmatter
 	sb.WriteString("---\n")
-	sb.WriteString(fmt.Sprintf("date:\n  created: %s\n", article.PublishedAt.Format("2006-01-02T15:04:05")))
+	sb.WriteString(fmt.Sprintf("title: \"%s\"\n", escapedTitle))
+	sb.WriteString(fmt.Sprintf("date: %s\n", article.PublishedAt.Format("2006-01-02T15:04:05")))
 
 	// Categories
 	sb.WriteString("categories:\n")
@@ -44,21 +53,17 @@ func (f *MarkdownFormatter) Format(article *models.Article) string {
 		sb.WriteString(fmt.Sprintf("author: %s\n", article.Author))
 	}
 
+	// Cover image
+	if article.ImageURL != "" {
+		sb.WriteString("cover:\n")
+		sb.WriteString(fmt.Sprintf("  image: \"%s\"\n", article.ImageURL))
+		sb.WriteString(fmt.Sprintf("  alt: \"%s\"\n", escapedTitle))
+		sb.WriteString("  hidden: false\n")
+	}
+
 	sb.WriteString("---\n\n")
 
-	// Title
-	title := article.TitleRU
-	if title == "" {
-		title = article.Title
-	}
-	sb.WriteString(fmt.Sprintf("# %s\n\n", title))
-
-	// Featured image
-	if article.ImageURL != "" {
-		sb.WriteString(fmt.Sprintf("![%s](%s)\n\n", title, article.ImageURL))
-	}
-
-	// Content
+	// Content (no # Title — Hugo renders title from frontmatter)
 	content := article.ContentRU
 	if content == "" {
 		content = article.Content
@@ -99,7 +104,7 @@ func (f *MarkdownFormatter) GetFilePath(article *models.Article, baseDir string)
 		slug = fmt.Sprintf("article-%d", article.ID)
 	}
 
-	// For MkDocs blog plugin: posts/YYYY/MM/slug.md
+	// For Hugo: posts/YYYY/MM/slug.md (under content directory)
 	return filepath.Join(baseDir, "posts", year, month, slug+".md")
 }
 

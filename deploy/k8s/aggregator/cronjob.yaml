@@ -39,7 +39,7 @@ spec:
                   echo ""
 
                   echo ""
-                  echo "--- Step 3: Publish to MkDocs ---"
+                  echo "--- Step 3: Publish to Hugo ---"
                   curl -s -X POST "http://aggregator:8080/api/publish?limit=10"
                   echo ""
 

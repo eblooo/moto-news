@@ -50,7 +50,7 @@ def fetch_page(url: str, timeout: int = 30) -> PageInfo:
 
     # Extract main content
     content = ""
-    # Try MkDocs Material main content area
+    # Try main content area (Hugo PaperMod)
     main = soup.find("main") or soup.find("article") or soup.find("div", class_="md-content")
     if main:
         # Remove navigation, scripts, styles

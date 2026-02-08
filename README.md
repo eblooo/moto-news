@@ -7,7 +7,7 @@
 - RSS-парсинг мотоциклетных порталов (RideApart)
 - Скрапинг полного текста статей (JSON-LD + HTML fallback)
 - Перевод на русский через Ollama или LibreTranslate
-- Публикация в блог на Material for MkDocs через GitHub API
+- Публикация в блог на Hugo (PaperMod) через GitHub API
 - HTTP API сервер (Gin) для управления через REST
 - AI-агенты для анализа сайта и предложений по улучшению (LangChain + LangGraph)
 - Деплой в Kubernetes (microk8s) через ArgoCD
@@ -89,7 +89,7 @@ curl http://localhost:8080/api/stats
 ```bash
 ./aggregator fetch              # Получить новые статьи из RSS
 ./aggregator translate -l 20    # Перевести статьи
-./aggregator publish            # Опубликовать в MkDocs
+./aggregator publish            # Опубликовать в Hugo блог
 ./aggregator run                # Полный цикл
 ./aggregator rescrape           # Повторно скачать контент
 ./aggregator stats              # Статистика
@@ -142,9 +142,9 @@ translator:
 database:
   path: ./moto-news.db
 
-mkdocs:
+hugo:
   path: ./blog
-  docs_dir: docs
+  content_dir: content
   auto_commit: true
   git_repo: https://github.com/KlimDos/my-blog.git
   git_branch: main
@@ -188,12 +188,12 @@ moto-news/
 │   ├── storage/           # SQLite хранилище
 │   ├── translator/        # Ollama / LibreTranslate
 │   ├── formatter/         # Markdown форматирование
-│   ├── publisher/         # GitHub API + MkDocs git (fallback)
+│   ├── publisher/         # GitHub API + Hugo git (fallback)
 │   ├── service/           # Бизнес-логика
 │   └── server/            # Gin HTTP API
 ├── agents/                # Python AI-агенты (LangChain/LangGraph)
 ├── deploy/                # K8s манифесты + скрипты деплоя
-├── blog/                  # MkDocs сайт (отдельный репо)
+├── blog/                  # Hugo сайт (отдельный репо)
 ├── Dockerfile             # Multi-stage build для Go
 ├── Makefile               # Команды сборки и деплоя
 └── config.yaml            # Конфигурация

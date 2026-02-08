@@ -40,7 +40,7 @@
          │                      │
          ▼                      ▼
    blog.alimov.top       GitHub Pages
-   (MkDocs Material)     (auto-deploy)
+   (Hugo PaperMod)       (auto-deploy)
 ```
 
 ## Подготовка сервера

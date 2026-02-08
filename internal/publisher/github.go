@@ -20,7 +20,7 @@ import (
 // No git clone/push needed — just HTTP requests.
 // Automatically triggers GitHub Actions workflow on push.
 type GitHubPublisher struct {
-	config    *config.MkDocsConfig
+	config    *config.HugoConfig
 	formatter *formatter.MarkdownFormatter
 	token     string
 	owner     string
@@ -32,7 +32,7 @@ type GitHubPublisher struct {
 // NewGitHubPublisher creates a publisher that uses GitHub API.
 // Token is read from GITHUB_TOKEN env var.
 // Repo is parsed from git_repo config (https://github.com/owner/repo.git).
-func NewGitHubPublisher(cfg *config.MkDocsConfig) *GitHubPublisher {
+func NewGitHubPublisher(cfg *config.HugoConfig) *GitHubPublisher {
 	token := os.Getenv("GITHUB_TOKEN")
 	owner, repo := parseGitHubRepo(cfg.GitRepo)
 
@@ -66,8 +66,8 @@ func (p *GitHubPublisher) Publish(article *models.Article) error {
 	// Format the article to markdown
 	content := p.formatter.Format(article)
 
-	// Build the file path (e.g. docs/posts/2026/02/slug.md)
-	filePath := p.formatter.GetFilePath(article, p.config.DocsDir)
+	// Build the file path (e.g. content/posts/2026/02/slug.md)
+	filePath := p.formatter.GetFilePath(article, p.config.ContentDir)
 
 	// Push to GitHub
 	message := fmt.Sprintf("Add article: %s", article.TitleRU)
@@ -97,7 +97,7 @@ func (p *GitHubPublisher) PublishMultiple(articles []*models.Article) error {
 	var files []treeFile
 	for _, article := range articles {
 		content := p.formatter.Format(article)
-		filePath := p.formatter.GetFilePath(article, p.config.DocsDir)
+		filePath := p.formatter.GetFilePath(article, p.config.ContentDir)
 		files = append(files, treeFile{path: filePath, content: content})
 	}
 

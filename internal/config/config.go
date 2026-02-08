@@ -10,7 +10,7 @@ import (
 type Config struct {
 	Sources    []SourceConfig   `mapstructure:"sources"`
 	Translator TranslatorConfig `mapstructure:"translator"`
-	MkDocs     MkDocsConfig     `mapstructure:"mkdocs"`
+	Hugo       HugoConfig       `mapstructure:"hugo"`
 	Schedule   ScheduleConfig   `mapstructure:"schedule"`
 	Database   DatabaseConfig   `mapstructure:"database"`
 	Server     ServerConfig     `mapstructure:"server"`
@@ -38,9 +38,9 @@ type LibreTranslateConfig struct {
 	Host string `mapstructure:"host"`
 }
 
-type MkDocsConfig struct {
+type HugoConfig struct {
 	Path       string `mapstructure:"path"`
-	DocsDir    string `mapstructure:"docs_dir"`
+	ContentDir string `mapstructure:"content_dir"`
 	AutoCommit bool   `mapstructure:"auto_commit"`
 	GitRemote  string `mapstructure:"git_remote"`
 	GitBranch  string `mapstructure:"git_branch"`
@@ -83,11 +83,11 @@ func Load(configPath string) (*Config, error) {
 Статья:
 `)
 	viper.SetDefault("translator.libretranslate.host", "http://localhost:5000")
-	viper.SetDefault("mkdocs.path", "./blog")
-	viper.SetDefault("mkdocs.docs_dir", "docs/news")
-	viper.SetDefault("mkdocs.auto_commit", true)
-	viper.SetDefault("mkdocs.git_remote", "origin")
-	viper.SetDefault("mkdocs.git_branch", "main")
+	viper.SetDefault("hugo.path", "./blog")
+	viper.SetDefault("hugo.content_dir", "content")
+	viper.SetDefault("hugo.auto_commit", true)
+	viper.SetDefault("hugo.git_remote", "origin")
+	viper.SetDefault("hugo.git_branch", "main")
 	viper.SetDefault("schedule.fetch_interval", "6h")
 	viper.SetDefault("schedule.translate_batch", 10)
 	viper.SetDefault("database.path", "./moto-news.db")
@@ -125,9 +125,9 @@ func Load(configPath string) (*Config, error) {
 		cfg.Database.Path = filepath.Join(cwd, cfg.Database.Path)
 	}
 
-	if !filepath.IsAbs(cfg.MkDocs.Path) {
+	if !filepath.IsAbs(cfg.Hugo.Path) {
 		cwd, _ := os.Getwd()
-		cfg.MkDocs.Path = filepath.Join(cwd, cfg.MkDocs.Path)
+		cfg.Hugo.Path = filepath.Join(cwd, cfg.Hugo.Path)
 	}
 
 	return &cfg, nil

@@ -22,7 +22,7 @@ type Article struct {
 	PublishedAt       time.Time  `json:"published_at"`
 	FetchedAt         time.Time  `json:"fetched_at"`
 	TranslatedAt      *time.Time `json:"translated_at"`
-	PublishedToMkDocs bool       `json:"published_to_mkdocs"`
+	PublishedToHugo bool       `json:"published_to_hugo"`
 	Slug              string     `json:"slug"`
 }
 
@@ -65,9 +65,9 @@ func (a *Article) IsTranslated() bool {
 	return a.TranslatedAt != nil && a.ContentRU != ""
 }
 
-// IsPublished returns true if article has been published to MkDocs
+// IsPublished returns true if article has been published to Hugo blog
 func (a *Article) IsPublished() bool {
-	return a.PublishedToMkDocs
+	return a.PublishedToHugo
 }
 
 // NeedsTranslation returns true if article needs translation

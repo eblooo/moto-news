@@ -23,9 +23,9 @@ translator:
 database:
   path: ./moto-news.db
 
-mkdocs:
+hugo:
   path: ./blog
-  docs_dir: docs
+  content_dir: content
   auto_commit: true
   git_repo: https://github.com/KlimDos/my-blog.git
   git_remote: origin

@@ -96,7 +96,7 @@ func (s *SQLiteStorage) InsertArticle(article *models.Article) error {
 		article.PublishedAt,
 		article.FetchedAt,
 		models.PtrToNullTime(article.TranslatedAt),
-		article.PublishedToMkDocs,
+		article.PublishedToHugo,
 		article.Slug,
 	)
 	if err != nil {
@@ -129,7 +129,7 @@ func (s *SQLiteStorage) UpdateArticle(article *models.Article) error {
 		article.TitleRU,
 		article.ContentRU,
 		models.PtrToNullTime(article.TranslatedAt),
-		article.PublishedToMkDocs,
+		article.PublishedToHugo,
 		article.Slug,
 		article.Content,
 		article.TagsJSON(),
@@ -265,7 +265,7 @@ func (s *SQLiteStorage) scanArticle(row *sql.Row) (*models.Article, error) {
 		&publishedAt,
 		&article.FetchedAt,
 		&translatedAt,
-		&article.PublishedToMkDocs,
+		&article.PublishedToHugo,
 		&article.Slug,
 	)
 	if err != nil {
@@ -309,7 +309,7 @@ func (s *SQLiteStorage) scanArticles(query string, args ...interface{}) ([]*mode
 			&publishedAt,
 			&article.FetchedAt,
 			&translatedAt,
-			&article.PublishedToMkDocs,
+			&article.PublishedToHugo,
 			&article.Slug,
 		)
 		if err != nil {

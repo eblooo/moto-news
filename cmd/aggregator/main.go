@@ -32,7 +32,7 @@ var rootCmd = &cobra.Command{
 	Long: `Moto News Aggregator - автоматизированная система для:
 - Парсинга новостей с мотоциклетных порталов (RideApart)
 - Перевода статей на русский язык через Ollama или LibreTranslate
-- Публикации в блог на Material for MkDocs
+- Публикации в блог на Hugo (PaperMod)
 - Веб-сервер (Gin) для управления через HTTP API`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		// Skip init for server command - it does its own setup
@@ -92,7 +92,7 @@ var translateCmd = &cobra.Command{
 
 var publishCmd = &cobra.Command{
 	Use:   "publish",
-	Short: "Опубликовать переведённые статьи в MkDocs",
+	Short: "Опубликовать переведённые статьи в Hugo блог",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		limit, _ := cmd.Flags().GetInt("limit")
 		result, err := svc.Publish(limit)
@@ -141,7 +141,7 @@ var statsCmd = &cobra.Command{
 		fmt.Println("=== Database Statistics ===")
 		fmt.Printf("Total articles:      %d\n", stats.Total)
 		fmt.Printf("Translated:          %d\n", stats.Translated)
-		fmt.Printf("Published to MkDocs: %d\n", stats.Published)
+		fmt.Printf("Published to Hugo:   %d\n", stats.Published)
 		fmt.Printf("Pending translation: %d\n", stats.Pending)
 		fmt.Printf("Pending publishing:  %d\n", stats.Unpublished)
 		return nil

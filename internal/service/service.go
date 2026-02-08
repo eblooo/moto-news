@@ -207,7 +207,7 @@ func (s *Service) Translate(limit int) (*TranslateResult, error) {
 
 	// Publish all translated articles
 	if len(translatedArticles) > 0 {
-		ghPub := publisher.NewGitHubPublisher(&s.cfg.MkDocs)
+		ghPub := publisher.NewGitHubPublisher(&s.cfg.Hugo)
 		if ghPub.IsAvailable() {
 			// Batch push via GitHub API (single commit)
 			fmt.Printf("\nPublishing %d articles via GitHub API...\n", len(translatedArticles))
@@ -215,7 +215,7 @@ func (s *Service) Translate(limit int) (*TranslateResult, error) {
 				fmt.Printf("  ✗ GitHub publish error: %v\n", err)
 			} else {
 				for _, a := range translatedArticles {
-					a.PublishedToMkDocs = true
+					a.PublishedToHugo = true
 					s.store.UpdateArticle(a)
 				}
 				fmt.Printf("  ✓ Published %d articles to GitHub\n", len(translatedArticles))
@@ -223,18 +223,18 @@ func (s *Service) Translate(limit int) (*TranslateResult, error) {
 		} else {
 			// Fallback to local file + git
 			fmt.Println("\nGITHUB_TOKEN not set, using local git publisher...")
-			pub := publisher.NewMkDocsPublisher(&s.cfg.MkDocs)
+			pub := publisher.NewHugoPublisher(&s.cfg.Hugo)
 			published := 0
 			for _, article := range translatedArticles {
 				if err := pub.Publish(article); err != nil {
 					fmt.Printf("  ✗ Error publishing: %v\n", err)
 				} else {
-					article.PublishedToMkDocs = true
+					article.PublishedToHugo = true
 					s.store.UpdateArticle(article)
 					published++
 				}
 			}
-			if s.cfg.MkDocs.AutoCommit && published > 0 {
+			if s.cfg.Hugo.AutoCommit && published > 0 {
 				if err := pub.GitCommit(fmt.Sprintf("Add %d new articles", published)); err != nil {
 					fmt.Printf("Warning: git commit failed: %v\n", err)
 				}
@@ -245,7 +245,7 @@ func (s *Service) Translate(limit int) (*TranslateResult, error) {
 	return result, nil
 }
 
-// Publish publishes translated articles to MkDocs
+// Publish publishes translated articles to Hugo blog
 func (s *Service) Publish(limit int) (*PublishResult, error) {
 	articles, err := s.store.GetUnpublishedArticles(limit)
 	if err != nil {
@@ -262,7 +262,7 @@ func (s *Service) Publish(limit int) (*PublishResult, error) {
 
 	fmt.Printf("Articles to publish: %d\n\n", len(articles))
 
-	ghPub := publisher.NewGitHubPublisher(&s.cfg.MkDocs)
+	ghPub := publisher.NewGitHubPublisher(&s.cfg.Hugo)
 	if ghPub.IsAvailable() {
 		// Batch push via GitHub API
 		fmt.Println("Publishing via GitHub API...")
@@ -272,7 +272,7 @@ func (s *Service) Publish(limit int) (*PublishResult, error) {
 			return result, nil
 		}
 		for _, a := range articles {
-			a.PublishedToMkDocs = true
+			a.PublishedToHugo = true
 			s.store.UpdateArticle(a)
 			result.Published++
 		}
@@ -280,7 +280,7 @@ func (s *Service) Publish(limit int) (*PublishResult, error) {
 	} else {
 		// Fallback to local git
 		fmt.Println("GITHUB_TOKEN not set, using local git publisher...")
-		pub := publisher.NewMkDocsPublisher(&s.cfg.MkDocs)
+		pub := publisher.NewHugoPublisher(&s.cfg.Hugo)
 
 		for i, article := range articles {
 			fmt.Printf("[%d/%d] Publishing: %s\n", i+1, len(articles), article.TitleRU)
@@ -290,7 +290,7 @@ func (s *Service) Publish(limit int) (*PublishResult, error) {
 				continue
 			}
 
-			article.PublishedToMkDocs = true
+			article.PublishedToHugo = true
 			if err := s.store.UpdateArticle(article); err != nil {
 				fmt.Printf("  ✗ Error updating status: %v\n", err)
 				result.Errors++
@@ -301,7 +301,7 @@ func (s *Service) Publish(limit int) (*PublishResult, error) {
 			fmt.Printf("  ✓ Published\n")
 		}
 
-		if s.cfg.MkDocs.AutoCommit && result.Published > 0 {
+		if s.cfg.Hugo.AutoCommit && result.Published > 0 {
 			if err := pub.GitCommit(fmt.Sprintf("Add %d new articles", result.Published)); err != nil {
 				fmt.Printf("Warning: git commit failed: %v\n", err)
 			}
@@ -330,7 +330,7 @@ func (s *Service) Run() (*PipelineResult, error) {
 	}
 	result.Translate = translateResult
 
-	fmt.Println("\n=== Step 3: Publishing to MkDocs ===")
+	fmt.Println("\n=== Step 3: Publishing to Hugo ===")
 	publishResult, err := s.Publish(100)
 	if err != nil {
 		fmt.Printf("Publish error: %v\n", err)
@@ -358,13 +358,13 @@ func (s *Service) Stats() (*StatsResult, error) {
 
 // Pull pulls/updates blog repository
 func (s *Service) Pull() error {
-	pub := publisher.NewMkDocsPublisher(&s.cfg.MkDocs)
+	pub := publisher.NewHugoPublisher(&s.cfg.Hugo)
 	return pub.GitPull()
 }
 
 // Push pushes changes to blog repository
 func (s *Service) Push() error {
-	pub := publisher.NewMkDocsPublisher(&s.cfg.MkDocs)
+	pub := publisher.NewHugoPublisher(&s.cfg.Hugo)
 	return pub.GitPush()
 }
 
