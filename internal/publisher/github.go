@@ -95,10 +95,17 @@ func (p *GitHubPublisher) PublishMultiple(articles []*models.Article) error {
 
 	// Collect files
 	var files []treeFile
-	for _, article := range articles {
+	fmt.Println("\nArticles to upload:")
+	for i, article := range articles {
 		content := p.formatter.Format(article)
 		filePath := p.formatter.GetFilePath(article, p.config.ContentDir)
 		files = append(files, treeFile{path: filePath, content: content})
+		title := article.TitleRU
+		if title == "" {
+			title = article.Title
+		}
+		fmt.Printf("  [%d/%d] %s\n", i+1, len(articles), title)
+		fmt.Printf("        → %s\n", filePath)
 	}
 
 	message := fmt.Sprintf("Add %d new articles", len(articles))
