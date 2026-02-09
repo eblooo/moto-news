@@ -27,7 +27,7 @@ class OllamaConfig:
 class GitHubConfig:
     token: str = ""
     repo: str = "KlimDos/my-blog"
-    discussions_category: str = "Ideas"
+    discussions_category: str = "For Developers"
 
 
 @dataclass

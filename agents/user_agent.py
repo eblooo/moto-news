@@ -37,6 +37,7 @@ from tools.site_reader import fetch_page
 from tools.github_discussions import (
     _graphql_query,
     _get_headers,
+    post_discussion,
 )
 
 
@@ -95,6 +96,7 @@ def fetch_existing_discussions(repo: str, category: str) -> list[dict]:
             createdAt
             comments { totalCount }
             category { name }
+            labels(first: 10) { nodes { name } }
             url
           }
         }
@@ -135,21 +137,23 @@ ANALYSIS_PROMPT = ChatPromptTemplate.from_messages([
     ("system", """Ты — AI-аналитик мотоциклетного блога blog.alimov.top.
 Блог построен на Hugo (тема PaperMod) и содержит автоматически переведённые с английского статьи о мотоциклах.
 
-Твоя задача — проанализировать данные о сайте и предложить 1-2 конкретных улучшения.
+Твоя задача — проанализировать данные о сайте и предложить 1 конкретное улучшение.
 
 Правила:
 1. Пиши ТОЛЬКО на русском языке
 2. Будь конкретным — указывай конкретные страницы, проблемы, решения
-3. НЕ ДУБЛИРУЙ уже существующие предложения (список ниже)
-4. Фокусируйся на реально полезных улучшениях
+3. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО предлагать темы из раздела «ЗАПРЕЩЁННЫЕ ТЕМЫ» ниже
+4. НЕ ДУБЛИРУЙ уже существующие предложения (список ниже)
+5. Фокусируйся на реально полезных улучшениях
 
 Темы для анализа:
-- Качество перевода (ошибки, неточности, смешение языков)
 - UX/навигация сайта
 - SEO (мета-теги, заголовки, описания)
 - Структура контента (категории, теги)
 - Битые ссылки или изображения
 - Визуальное оформление
+- Скорость загрузки и производительность
+- Адаптивность (мобильные устройства)
 
 Формат ответа — строго JSON:
 ```json
@@ -182,13 +186,26 @@ URL: {url}
 --- Внутренние ссылки ({links_count}) ---
 {links}
 
+=== ЗАПРЕЩЁННЫЕ ТЕМЫ (НИКОГДА не предлагай ничего похожего!) ===
+{banned_topics}
+
 === Уже существующие обсуждения (НЕ дублировать!) ===
 {existing_discussions}
 
 === Дата анализа: {date} ===
 
-Проанализируй и предложи 1 улучшение в JSON формате."""),
+Проанализируй и предложи 1 улучшение в JSON формате.
+НЕ предлагай ничего связанного с запрещёнными темами!"""),
 ])
+
+
+def _has_label(discussion: dict, label_name: str) -> bool:
+    """Check if a discussion has a specific label."""
+    labels = discussion.get("labels", {})
+    if not labels:
+        return False
+    nodes = labels.get("nodes", [])
+    return any(l.get("name", "").lower() == label_name.lower() for l in nodes)
 
 
 def run_llm_analysis(config, site_data: dict, discussions: list[dict]) -> dict:
@@ -206,15 +223,32 @@ def run_llm_analysis(config, site_data: dict, discussions: list[dict]) -> dict:
 
     chain = ANALYSIS_PROMPT | llm | StrOutputParser()
 
-    # Format existing discussions for context
-    existing = ""
-    if discussions:
-        for d in discussions:
-            existing += f"- #{d['number']}: {d['title']}\n"
+    # Split discussions: wontfix (banned) vs normal (existing)
+    wontfix = [d for d in discussions if _has_label(d, "wontfix")]
+    existing = [d for d in discussions if not _has_label(d, "wontfix")]
+
+    log.info("pipeline.llm_analysis.discussions_split",
+             total=len(discussions), wontfix=len(wontfix), existing=len(existing))
+
+    # Format banned topics (wontfix)
+    banned_text = ""
+    if wontfix:
+        for d in wontfix:
+            banned_text += f"- #{d['number']}: {d['title']}\n"
             if d.get("body"):
-                existing += f"  {d['body'][:150]}...\n"
+                banned_text += f"  {d['body'][:200]}\n"
     else:
-        existing = "Пока нет обсуждений."
+        banned_text = "Нет запрещённых тем."
+
+    # Format existing discussions
+    existing_text = ""
+    if existing:
+        for d in existing:
+            existing_text += f"- #{d['number']}: {d['title']}\n"
+            if d.get("body"):
+                existing_text += f"  {d['body'][:150]}...\n"
+    else:
+        existing_text = "Пока нет обсуждений."
 
     invoke_args = {
         "url": site_data["url"],
@@ -225,7 +259,8 @@ def run_llm_analysis(config, site_data: dict, discussions: list[dict]) -> dict:
         "content": site_data["content"],
         "links_count": len(site_data["links"]),
         "links": "\n".join(site_data["links"]) if site_data["links"] else "Нет ссылок",
-        "existing_discussions": existing,
+        "banned_topics": banned_text,
+        "existing_discussions": existing_text,
         "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
 
@@ -311,8 +346,10 @@ def _parse_llm_json(result_text: str) -> dict:
     title_match = re.search(
         r'"title"\s*:\s*"([^"]*(?:\\.[^"]*)*)"', result_text,
     )
+    # Greedy regex: capture everything between "body": " and the last " before }
+    # This handles unescaped quotes inside body text (common with llama3.2:3b)
     body_match = re.search(
-        r'"body"\s*:\s*"((?:[^"\\]|\\.)*)"', result_text, re.DOTALL,
+        r'"body"\s*:\s*"(.*)"\s*\}', result_text, re.DOTALL,
     )
 
     if title_match:
@@ -321,7 +358,8 @@ def _parse_llm_json(result_text: str) -> dict:
         if body_match:
             body = body_match.group(1).replace('\\"', '"').replace('\\n', '\n').strip()
         if title:
-            log.info("pipeline.parse.regex_ok", title_preview=title[:80])
+            log.info("pipeline.parse.regex_ok", title_preview=title[:80],
+                     has_body=bool(body))
             return {"title": title, "body": body}
 
     # Step 5: Final fallback — extract first meaningful line as title
@@ -341,86 +379,66 @@ def _parse_llm_json(result_text: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Step 5: Post to GitHub Discussions (deterministic, no LLM)
+# Programmatic deduplication
 # ---------------------------------------------------------------------------
 
-def post_discussion(repo: str, title: str, body: str, category: str) -> str:
-    """Create a new GitHub Discussion. Returns URL or error message."""
-    log.info("pipeline.post_discussion",
-             repo=repo, category=category,
-             title=title[:80], body_length=len(body))
+def _normalize_words(text: str) -> set[str]:
+    """Normalize text to a set of lowercase words, stripping punctuation."""
+    # Remove punctuation, lowercase, split into words
+    cleaned = re.sub(r'[^\w\s]', ' ', text.lower())
+    # Filter out short words (articles, prepositions) and digits
+    return {w for w in cleaned.split() if len(w) > 2}
 
-    if not title or not body:
-        log.info("pipeline.post_discussion.skip_empty")
-        return "Skipped: empty title or body"
 
-    owner, name = repo.split("/")
+def _jaccard_similarity(set_a: set, set_b: set) -> float:
+    """Compute Jaccard similarity between two sets."""
+    if not set_a or not set_b:
+        return 0.0
+    intersection = set_a & set_b
+    union = set_a | set_b
+    return len(intersection) / len(union)
 
-    # Get category ID
-    cat_query = """
-    query($owner: String!, $name: String!) {
-      repository(owner: $owner, name: $name) {
-        discussionCategories(first: 20) {
-          nodes { id name }
-        }
-      }
-    }
+
+def _is_duplicate(
+    title: str,
+    body: str,
+    discussions: list[dict],
+    wontfix_threshold: float = 0.15,
+    normal_threshold: float = 0.3,
+) -> tuple[bool, str]:
+    """Check if a suggestion is too similar to existing discussions.
+
+    Uses stricter threshold for wontfix discussions (even loosely related = blocked).
+    Returns (is_duplicate, reason) tuple.
     """
+    suggestion_words = _normalize_words(f"{title} {body}")
+    if not suggestion_words:
+        return False, ""
 
-    data = _graphql_query(cat_query, {"owner": owner, "name": name})
-    categories = data["repository"]["discussionCategories"]["nodes"]
+    for d in discussions:
+        disc_words = _normalize_words(f"{d['title']} {d.get('body', '')}")
+        similarity = _jaccard_similarity(suggestion_words, disc_words)
 
-    category_id = None
-    for cat in categories:
-        if cat["name"].lower() == category.lower():
-            category_id = cat["id"]
-            break
+        is_wontfix = _has_label(d, "wontfix")
+        threshold = wontfix_threshold if is_wontfix else normal_threshold
 
-    if not category_id:
-        available = [c["name"] for c in categories]
-        log.error("pipeline.post_discussion.category_not_found",
-                  category=category, available=available)
-        return f"Category '{category}' not found. Available: {available}"
+        if similarity >= threshold:
+            reason = (
+                f"Similar to #{d['number']} '{d['title'][:60]}' "
+                f"(similarity={similarity:.2f}, "
+                f"threshold={threshold}, "
+                f"{'wontfix' if is_wontfix else 'existing'})"
+            )
+            log.warning("pipeline.dedup.duplicate_detected",
+                        suggestion_title=title[:60],
+                        existing_number=d["number"],
+                        existing_title=d["title"][:60],
+                        similarity=round(similarity, 3),
+                        threshold=threshold,
+                        is_wontfix=is_wontfix)
+            return True, reason
 
-    log.info("pipeline.post_discussion.category_found",
-             category=category, category_id=category_id)
-
-    # Get repo ID
-    repo_query = """
-    query($owner: String!, $name: String!) {
-      repository(owner: $owner, name: $name) { id }
-    }
-    """
-    repo_data = _graphql_query(repo_query, {"owner": owner, "name": name})
-    repo_id = repo_data["repository"]["id"]
-
-    # Create discussion
-    mutation = """
-    mutation($repoId: ID!, $categoryId: ID!, $title: String!, $body: String!) {
-      createDiscussion(input: {
-        repositoryId: $repoId,
-        categoryId: $categoryId,
-        title: $title,
-        body: $body
-      }) {
-        discussion { id number url }
-      }
-    }
-    """
-
-    log.info("pipeline.post_discussion.creating")
-    result = _graphql_query(mutation, {
-        "repoId": repo_id,
-        "categoryId": category_id,
-        "title": title,
-        "body": body,
-    })
-
-    disc = result["createDiscussion"]["discussion"]
-    url = disc["url"]
-    log.info("pipeline.post_discussion.success",
-             number=disc["number"], url=url)
-    return url
+    return False, ""
 
 
 # ---------------------------------------------------------------------------
@@ -464,6 +482,19 @@ def run_once(config, dry_run: bool = False):
                 log.info("pipeline.no_suggestion",
                          elapsed_seconds=elapsed)
                 return "LLM did not produce any suggestions this run."
+
+            # Step 4.5: Programmatic deduplication check
+            is_dup, dup_reason = _is_duplicate(
+                suggestion["title"],
+                suggestion["body"],
+                discussions,
+            )
+            if is_dup:
+                log.info("pipeline.skipped_duplicate",
+                         title=suggestion["title"][:80],
+                         reason=dup_reason,
+                         elapsed_seconds=elapsed)
+                return f"Skipped: duplicate — {dup_reason}"
 
             # Step 5: Post to GitHub
             if dry_run:

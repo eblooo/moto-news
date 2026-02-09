@@ -297,6 +297,90 @@ def create_discussion_comment(
         return f"Error posting comment: {str(e)}"
 
 
+def post_discussion(repo: str, title: str, body: str, category: str) -> str:
+    """Create a new GitHub Discussion. Returns URL or error message.
+
+    This is a shared helper used by both user_agent and site_assessor pipelines.
+    Unlike the @tool-decorated create_discussion(), this function is meant
+    to be called directly from pipeline code.
+    """
+    log.info("post_discussion",
+             repo=repo, category=category,
+             title=title[:80], body_length=len(body))
+
+    if not title or not body:
+        log.info("post_discussion.skip_empty")
+        return "Skipped: empty title or body"
+
+    owner, name = repo.split("/")
+
+    # Get category ID
+    cat_query = """
+    query($owner: String!, $name: String!) {
+      repository(owner: $owner, name: $name) {
+        discussionCategories(first: 20) {
+          nodes { id name }
+        }
+      }
+    }
+    """
+
+    data = _graphql_query(cat_query, {"owner": owner, "name": name})
+    categories = data["repository"]["discussionCategories"]["nodes"]
+
+    category_id = None
+    for cat in categories:
+        if cat["name"].lower() == category.lower():
+            category_id = cat["id"]
+            break
+
+    if not category_id:
+        available = [c["name"] for c in categories]
+        log.error("post_discussion.category_not_found",
+                  category=category, available=available)
+        return f"Category '{category}' not found. Available: {available}"
+
+    log.info("post_discussion.category_found",
+             category=category, category_id=category_id)
+
+    # Get repo ID
+    repo_query = """
+    query($owner: String!, $name: String!) {
+      repository(owner: $owner, name: $name) { id }
+    }
+    """
+    repo_data = _graphql_query(repo_query, {"owner": owner, "name": name})
+    repo_id = repo_data["repository"]["id"]
+
+    # Create discussion
+    mutation = """
+    mutation($repoId: ID!, $categoryId: ID!, $title: String!, $body: String!) {
+      createDiscussion(input: {
+        repositoryId: $repoId,
+        categoryId: $categoryId,
+        title: $title,
+        body: $body
+      }) {
+        discussion { id number url }
+      }
+    }
+    """
+
+    log.info("post_discussion.creating")
+    result = _graphql_query(mutation, {
+        "repoId": repo_id,
+        "categoryId": category_id,
+        "title": title,
+        "body": body,
+    })
+
+    disc = result["createDiscussion"]["discussion"]
+    url = disc["url"]
+    log.info("post_discussion.success",
+             number=disc["number"], url=url)
+    return url
+
+
 @tool
 def create_discussion(
     repo: str = "KlimDos/my-blog",

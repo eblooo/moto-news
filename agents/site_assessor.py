@@ -4,15 +4,18 @@ Analyzes blog.alimov.top and generates improvement suggestions.
 
 Usage:
     python site_assessor.py [--config agents.yaml] [--url https://blog.alimov.top]
+    python site_assessor.py --post-discussion --config agents.yaml
 
 Requirements:
     - Ollama running with qwen2.5-coder:7b or llama3.2:3b
     - pip install -r requirements.txt
+    - GITHUB_TOKEN env var (only when --post-discussion is used)
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from datetime import datetime
@@ -24,6 +27,7 @@ from langchain_core.output_parsers import StrOutputParser
 
 from config import load_config
 from tools.site_reader import fetch_page
+from tools.github_discussions import post_discussion
 
 
 def create_assessment_chain(model: str, host: str, temperature: float = 0.35):
@@ -150,7 +154,16 @@ def main():
     parser.add_argument("--config", default=None, help="Path to agents config YAML")
     parser.add_argument("--url", default="https://blog.alimov.top", help="Site URL to analyze")
     parser.add_argument("--output", default=None, help="Save output to file")
+    parser.add_argument("--post-discussion", action="store_true",
+                        help="Post the report as a GitHub Discussion")
     args = parser.parse_args()
+
+    cfg = load_config(args.config)
+
+    if args.post_discussion and not cfg.github.token:
+        print("Error: GITHUB_TOKEN is required when --post-discussion is used.")
+        print("  export GITHUB_TOKEN=ghp_xxxxxxxxxxxx")
+        sys.exit(1)
 
     result = run_assessment(args.url, args.config)
 
@@ -166,6 +179,25 @@ def main():
             f.write(f"**Date:** {datetime.now().isoformat()}\n\n")
             f.write(result)
         print(f"\nReport saved to {args.output}")
+
+    if args.post_discussion:
+        today = datetime.now().strftime("%Y-%m-%d")
+        title = f"Оценка сайта — {today}"
+        body = (
+            f"# Оценка сайта\n\n"
+            f"**URL:** {args.url}\n"
+            f"**Дата:** {today}\n\n"
+            f"{result}"
+        )
+
+        print(f"\nPosting discussion: {title}")
+        url = post_discussion(
+            repo=cfg.github.repo,
+            title=title,
+            body=body,
+            category=cfg.github.discussions_category,
+        )
+        print(f"Discussion posted: {url}")
 
 
 if __name__ == "__main__":
