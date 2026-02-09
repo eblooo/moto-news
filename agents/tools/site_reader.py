@@ -10,8 +10,12 @@ from dataclasses import dataclass
 from typing import List
 
 import httpx
+import structlog
 from bs4 import BeautifulSoup
 from langchain_core.tools import tool
+
+
+log = structlog.get_logger()
 
 
 @dataclass
@@ -27,12 +31,16 @@ class PageInfo:
 
 def fetch_page(url: str, timeout: int = 30) -> PageInfo:
     """Fetch and parse a single page."""
+    log.info("fetch_page.start", url=url)
+
     headers = {
         "User-Agent": "MotoNewsSiteAssessor/1.0 (blog analysis bot)"
     }
 
     response = httpx.get(url, headers=headers, timeout=timeout, follow_redirects=True)
     response.raise_for_status()
+    log.info("fetch_page.http_ok", url=url, status=response.status_code,
+             content_length=len(response.text))
 
     soup = BeautifulSoup(response.text, "html.parser")
 
@@ -85,6 +93,9 @@ def fetch_page(url: str, timeout: int = 30) -> PageInfo:
     # Word count
     word_count = len(content.split()) if content else 0
 
+    log.info("fetch_page.parsed", url=url, title=title[:60],
+             word_count=word_count, links=len(links), headings=len(headings))
+
     return PageInfo(
         url=url,
         title=title,
@@ -102,6 +113,7 @@ def get_site_snapshot(url: str = "https://blog.alimov.top") -> str:
     Fetch a snapshot of the blog site for analysis.
     Returns page title, structure, content summary, and links.
     """
+    log.info("tool.get_site_snapshot", url=url)
     try:
         page = fetch_page(url)
 
@@ -119,9 +131,12 @@ Word Count: {page.word_count}
 --- Internal Links ({len(page.links)} total) ---
 {chr(10).join(page.links[:20])}
 """
+        log.info("tool.get_site_snapshot.done",
+                 title=page.title[:60], word_count=page.word_count)
         return result
 
     except Exception as e:
+        log.error("tool.get_site_snapshot.error", url=url, error=str(e))
         return f"Error fetching site: {str(e)}"
 
 
@@ -131,8 +146,11 @@ def get_page_content(url: str) -> str:
     Fetch content from a specific page on the blog.
     Useful for analyzing individual articles or sections.
     """
+    log.info("tool.get_page_content", url=url)
     try:
         page = fetch_page(url)
+        log.info("tool.get_page_content.done",
+                 url=url, word_count=page.word_count)
         return f"""=== Page: {page.url} ===
 Title: {page.title}
 Word Count: {page.word_count}
@@ -141,6 +159,7 @@ Word Count: {page.word_count}
 {page.content[:4000]}
 """
     except Exception as e:
+        log.error("tool.get_page_content.error", url=url, error=str(e))
         return f"Error fetching page: {str(e)}"
 
 
@@ -150,6 +169,7 @@ def analyze_site_structure(url: str = "https://blog.alimov.top") -> str:
     Analyze the overall structure of the blog site.
     Returns information about navigation, categories, and organization.
     """
+    log.info("tool.analyze_site_structure", url=url)
     try:
         page = fetch_page(url)
 
@@ -175,6 +195,10 @@ def analyze_site_structure(url: str = "https://blog.alimov.top") -> str:
                 categories.append(text)
         categories = list(set(categories))
 
+        log.info("tool.analyze_site_structure.done",
+                 nav_items=len(nav_items), categories=len(categories),
+                 links=len(page.links))
+
         result = f"""=== Site Structure Analysis: {url} ===
 
 --- Navigation ({len(nav_items)} items) ---
@@ -193,4 +217,5 @@ Word count: {page.word_count}
         return result
 
     except Exception as e:
+        log.error("tool.analyze_site_structure.error", url=url, error=str(e))
         return f"Error analyzing site: {str(e)}"

@@ -18,6 +18,7 @@ Requirements:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from datetime import datetime
@@ -76,6 +77,12 @@ SYSTEM_PROMPT = """Ты — AI-помощник для мотоциклетно�
 
 def create_user_agent(config):
     """Create a ReAct agent with site reading and GitHub tools."""
+    log.info("user_agent.creating_agent",
+             model=config.ollama.user_model,
+             host=config.ollama.host,
+             temperature=config.ollama.temperature,
+             num_ctx=config.ollama.num_ctx)
+
     llm = ChatOllama(
         model=config.ollama.user_model,
         base_url=config.ollama.host,
@@ -93,21 +100,30 @@ def create_user_agent(config):
         create_discussion,
     ]
 
+    log.info("user_agent.tools_registered",
+             tools=[t.name for t in tools])
+
     agent = create_react_agent(
         model=llm,
         tools=tools,
         prompt=SYSTEM_PROMPT,
     )
 
+    log.info("user_agent.agent_ready")
     return agent
 
 
 def run_once(config, dry_run: bool = False):
     """Run the user agent once with retries."""
+    start_time = time.monotonic()
+
     log.info("user_agent.run_start",
              model=config.ollama.user_model,
              host=config.ollama.host,
-             site=config.site.url)
+             site=config.site.url,
+             github_repo=config.github.repo,
+             github_token_set=bool(config.github.token),
+             dry_run=dry_run)
 
     task = f"""Выполни следующие шаги:
 
@@ -137,27 +153,80 @@ def run_once(config, dry_run: bool = False):
 
     last_error = None
     for attempt in range(1, MAX_RETRIES + 1):
+        attempt_start = time.monotonic()
         try:
-            log.info("user_agent.invoking_agent", attempt=attempt)
+            log.info("user_agent.attempt_start",
+                     attempt=attempt, max_retries=MAX_RETRIES)
+
             agent = create_user_agent(config)
+
+            log.info("user_agent.invoking_agent",
+                     attempt=attempt, task_length=len(task))
+
             result = agent.invoke({"messages": messages})
-            final_message = result["messages"][-1].content
-            log.info("user_agent.completed", result_length=len(final_message))
+
+            # Log all messages in the conversation for visibility
+            agent_messages = result.get("messages", [])
+            log.info("user_agent.agent_messages_count",
+                     total_messages=len(agent_messages))
+
+            for i, msg in enumerate(agent_messages):
+                msg_type = type(msg).__name__
+                content_preview = ""
+                if hasattr(msg, "content") and msg.content:
+                    content_preview = str(msg.content)[:200]
+
+                # Log tool calls if present
+                tool_calls = getattr(msg, "tool_calls", None)
+                if tool_calls:
+                    for tc in tool_calls:
+                        log.info("user_agent.tool_call",
+                                 message_idx=i,
+                                 tool_name=tc.get("name", "unknown"),
+                                 tool_args_keys=list(tc.get("args", {}).keys()))
+
+                log.info("user_agent.message",
+                         message_idx=i,
+                         message_type=msg_type,
+                         content_preview=content_preview)
+
+            final_message = agent_messages[-1].content if agent_messages else ""
+            elapsed = round(time.monotonic() - attempt_start, 1)
+
+            log.info("user_agent.completed",
+                     attempt=attempt,
+                     result_length=len(final_message),
+                     elapsed_seconds=elapsed)
+
+            total_elapsed = round(time.monotonic() - start_time, 1)
+            log.info("user_agent.run_finished",
+                     total_elapsed_seconds=total_elapsed,
+                     status="success")
+
             return final_message
+
         except Exception as e:
             last_error = e
+            elapsed = round(time.monotonic() - attempt_start, 1)
             log.warning("user_agent.attempt_failed",
                         attempt=attempt,
                         max_retries=MAX_RETRIES,
-                        error=str(e))
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        elapsed_seconds=elapsed)
             if attempt < MAX_RETRIES:
                 delay = RETRY_DELAY_SECONDS * attempt
-                log.info("user_agent.retrying", delay_seconds=delay)
+                log.info("user_agent.retrying",
+                         next_attempt=attempt + 1,
+                         delay_seconds=delay)
                 time.sleep(delay)
 
+    total_elapsed = round(time.monotonic() - start_time, 1)
     log.error("user_agent.all_retries_failed",
               max_retries=MAX_RETRIES,
-              error=str(last_error))
+              error=str(last_error),
+              error_type=type(last_error).__name__,
+              total_elapsed_seconds=total_elapsed)
     return f"Error after {MAX_RETRIES} retries: {last_error}"
 
 
@@ -166,16 +235,22 @@ def run_periodic(config, dry_run: bool = False):
     interval = config.schedule_interval_minutes * 60
 
     log.info("user_agent.periodic_start",
-             interval_minutes=config.schedule_interval_minutes)
+             interval_minutes=config.schedule_interval_minutes,
+             dry_run=dry_run)
 
+    run_count = 0
     while True:
+        run_count += 1
+        log.info("user_agent.periodic_run",
+                 run_number=run_count)
         try:
             result = run_once(config, dry_run)
             print("\n" + "=" * 50)
             print(result)
             print("=" * 50 + "\n")
         except Exception as e:
-            log.error("user_agent.periodic_error", error=str(e))
+            log.error("user_agent.periodic_error",
+                      run_number=run_count, error=str(e))
 
         log.info("user_agent.sleeping",
                  next_run_in_minutes=config.schedule_interval_minutes)
@@ -189,11 +264,23 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Don't post to GitHub")
     args = parser.parse_args()
 
+    log.info("user_agent.starting",
+             config_path=args.config,
+             once=args.once,
+             dry_run=args.dry_run,
+             pid=os.getpid())
+
     config = load_config(args.config)
+    log.info("user_agent.config_loaded",
+             site_url=config.site.url,
+             github_repo=config.github.repo,
+             ollama_host=config.ollama.host,
+             ollama_model=config.ollama.user_model,
+             github_token_set=bool(config.github.token))
 
     if not config.github.token and not args.dry_run:
-        print("WARNING: GITHUB_TOKEN not set. Use --dry-run for testing.")
-        print("  export GITHUB_TOKEN=ghp_xxxxxxxxxxxx")
+        log.error("user_agent.no_github_token",
+                   hint="export GITHUB_TOKEN=ghp_xxxxxxxxxxxx or use --dry-run")
         sys.exit(1)
 
     if args.once or args.dry_run:
@@ -201,6 +288,7 @@ def main():
         print("\n" + "=" * 50)
         print(result)
         print("=" * 50)
+        log.info("user_agent.exit", mode="once")
     else:
         run_periodic(config, dry_run=False)
 

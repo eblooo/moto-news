@@ -10,8 +10,11 @@ from dataclasses import dataclass
 from typing import Dict, Optional
 
 import httpx
+import structlog
 from langchain_core.tools import tool
 
+
+log = structlog.get_logger()
 
 GITHUB_GRAPHQL_URL = "https://api.github.com/graphql"
 
@@ -79,6 +82,7 @@ def list_discussions(
     List recent discussions from the specified GitHub repository and category.
     Returns discussion titles, authors, and comment counts.
     """
+    log.info("tool.list_discussions", repo=repo, category=category, limit=limit)
     owner, name = repo.split("/")
 
     query = """
@@ -117,6 +121,9 @@ def list_discussions(
                 if d["category"]["name"].lower() == category.lower()
             ]
 
+        log.info("tool.list_discussions.result",
+                 total=len(discussions), category=category)
+
         if not discussions:
             return f"No discussions found in category '{category}'"
 
@@ -134,8 +141,10 @@ def list_discussions(
         return result
 
     except ValueError as e:
+        log.error("tool.list_discussions.auth_error", error=str(e))
         return f"Error: {str(e)} — Set GITHUB_TOKEN to use this tool."
     except Exception as e:
+        log.error("tool.list_discussions.error", error=str(e))
         return f"Error listing discussions: {str(e)}"
 
 
@@ -147,6 +156,8 @@ def get_discussion_comments(
     """
     Get all comments from a specific discussion.
     """
+    log.info("tool.get_discussion_comments",
+             repo=repo, discussion_number=discussion_number)
     owner, name = repo.split("/")
 
     query = """
@@ -179,13 +190,20 @@ def get_discussion_comments(
 
         disc = data["repository"]["discussion"]
         if not disc:
+            log.warning("tool.get_discussion_comments.not_found",
+                        discussion_number=discussion_number)
             return f"Discussion #{discussion_number} not found"
+
+        comments = disc["comments"]["nodes"]
+        log.info("tool.get_discussion_comments.result",
+                 discussion_number=discussion_number,
+                 title=disc["title"],
+                 comments_count=len(comments))
 
         result = f"=== Discussion #{discussion_number}: {disc['title']} ===\n"
         result += f"Author: {disc['author']['login'] if disc['author'] else 'unknown'}\n"
         result += f"Body: {disc['body'][:500]}\n\n"
 
-        comments = disc["comments"]["nodes"]
         if not comments:
             result += "No comments yet.\n"
         else:
@@ -198,8 +216,10 @@ def get_discussion_comments(
         return result
 
     except ValueError as e:
+        log.error("tool.get_discussion_comments.auth_error", error=str(e))
         return f"Error: {str(e)}"
     except Exception as e:
+        log.error("tool.get_discussion_comments.error", error=str(e))
         return f"Error: {str(e)}"
 
 
@@ -213,7 +233,12 @@ def create_discussion_comment(
     Post a comment to a specific GitHub Discussion.
     The comment should be constructive and relevant.
     """
+    log.info("tool.create_discussion_comment",
+             repo=repo, discussion_number=discussion_number,
+             body_length=len(comment_body))
+
     if not comment_body.strip():
+        log.warning("tool.create_discussion_comment.empty_body")
         return "Error: comment_body cannot be empty"
 
     owner, name = repo.split("/")
@@ -237,6 +262,8 @@ def create_discussion_comment(
         })
 
         discussion_id = data["repository"]["discussion"]["id"]
+        log.info("tool.create_discussion_comment.posting",
+                 discussion_id=discussion_id)
 
         # Create comment
         mutation = """
@@ -257,11 +284,16 @@ def create_discussion_comment(
         })
 
         comment = result["addDiscussionComment"]["comment"]
-        return f"Comment posted successfully! URL: {comment.get('url', 'N/A')}"
+        url = comment.get("url", "N/A")
+        log.info("tool.create_discussion_comment.success",
+                 discussion_number=discussion_number, url=url)
+        return f"Comment posted successfully! URL: {url}"
 
     except ValueError as e:
+        log.error("tool.create_discussion_comment.auth_error", error=str(e))
         return f"Error: {str(e)}"
     except Exception as e:
+        log.error("tool.create_discussion_comment.error", error=str(e))
         return f"Error posting comment: {str(e)}"
 
 
@@ -275,7 +307,12 @@ def create_discussion(
     """
     Create a new GitHub Discussion in the specified category.
     """
+    log.info("tool.create_discussion",
+             repo=repo, title=title[:80], category=category,
+             body_length=len(body))
+
     if not title.strip() or not body.strip():
+        log.warning("tool.create_discussion.empty_fields")
         return "Error: title and body cannot be empty"
 
     owner, name = repo.split("/")
@@ -309,7 +346,12 @@ def create_discussion(
 
         if not category_id:
             available = [c["name"] for c in categories]
+            log.error("tool.create_discussion.category_not_found",
+                      category=category, available=available)
             return f"Category '{category}' not found. Available: {available}"
+
+        log.info("tool.create_discussion.category_found",
+                 category=category, category_id=category_id)
 
         # Get repo ID
         repo_query = """
@@ -340,6 +382,7 @@ def create_discussion(
         }
         """
 
+        log.info("tool.create_discussion.creating", title=title[:80])
         result = _graphql_query(mutation, {
             "repoId": repo_id,
             "categoryId": category_id,
@@ -348,9 +391,13 @@ def create_discussion(
         })
 
         disc = result["createDiscussion"]["discussion"]
+        log.info("tool.create_discussion.success",
+                 number=disc["number"], url=disc["url"])
         return f"Discussion created: #{disc['number']} — {disc['url']}"
 
     except ValueError as e:
+        log.error("tool.create_discussion.auth_error", error=str(e))
         return f"Error: {str(e)}"
     except Exception as e:
+        log.error("tool.create_discussion.error", error=str(e))
         return f"Error creating discussion: {str(e)}"
