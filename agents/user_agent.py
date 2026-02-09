@@ -25,7 +25,10 @@ from datetime import datetime
 import structlog
 from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage, SystemMessage
-from langgraph.prebuilt import create_react_agent
+try:
+    from langchain.agents import create_react_agent
+except ImportError:
+    from langgraph.prebuilt import create_react_agent
 
 from config import load_config
 from tools.site_reader import get_site_snapshot, get_page_content, analyze_site_structure
