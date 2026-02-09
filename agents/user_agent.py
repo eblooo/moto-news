@@ -1,12 +1,16 @@
 """
-Stage 2: User Agent — deterministic pipeline with LLM analysis.
+Stage 2: User Agent — deterministic pipeline with code-driven topic selection.
 
-Pipeline steps (code-driven, no ReAct):
+Pipeline steps:
 1. Fetch site snapshot (code)
-2. Analyze site structure (code)
-3. Fetch existing GitHub Discussions (code)
-4. LLM analyzes data and generates suggestion (LLM)
-5. Post suggestion to GitHub Discussions (code)
+2. Fetch existing GitHub Discussions (code)
+3. Pick first uncovered topic from TOPIC_ROSTER (code — deterministic)
+4. LLM analyzes site for that specific topic (LLM — narrow focus)
+5. Safety dedup check (code)
+6. Post suggestion to GitHub Discussions (code)
+
+The topic is always chosen by code, never by the LLM.  This avoids the
+problem of small models ignoring "banned topics" instructions.
 
 Usage:
     python user_agent.py [--config agents.yaml] [--once] [--dry-run]
@@ -45,6 +49,144 @@ log = structlog.get_logger()
 
 MAX_RETRIES = 3
 RETRY_DELAY_SECONDS = 15
+
+
+# ---------------------------------------------------------------------------
+# Topic roster — code picks the topic, LLM only elaborates
+# ---------------------------------------------------------------------------
+
+TOPIC_ROSTER: list[dict] = [
+    {
+        "id": "seo",
+        "name": "SEO и метаданные",
+        "prompt_focus": (
+            "Проанализируй SEO-оптимизацию сайта: мета-теги (title, description), "
+            "структуру заголовков (H1-H6), alt-тексты изображений, URL-структуру, "
+            "наличие sitemap.xml и robots.txt. Укажи конкретные страницы с проблемами."
+        ),
+        "keywords": [
+            "seo", "мета", "метаданные", "описание", "title", "description",
+            "robots", "sitemap", "заголовок", "h1", "поисковая оптимизация",
+        ],
+    },
+    {
+        "id": "navigation",
+        "name": "UX и навигация",
+        "prompt_focus": (
+            "Проанализируй навигацию сайта: главное меню, хлебные крошки, "
+            "удобство перемещения между статьями, пагинацию, структуру категорий "
+            "и тегов. Укажи конкретные проблемы навигации."
+        ),
+        "keywords": [
+            "навигация", "меню", "ux", "категории", "теги", "пагинация",
+            "хлебные крошки", "breadcrumb", "удобство",
+        ],
+    },
+    {
+        "id": "mobile",
+        "name": "Мобильная адаптивность",
+        "prompt_focus": (
+            "Проанализируй мобильную адаптивность сайта: отображение на маленьких "
+            "экранах, размеры шрифтов и кнопок, удобство чтения статей на телефоне, "
+            "адаптивность изображений и таблиц."
+        ),
+        "keywords": [
+            "мобильн", "адаптив", "responsive", "экран", "телефон",
+            "смартфон", "touch", "viewport",
+        ],
+    },
+    {
+        "id": "performance",
+        "name": "Скорость загрузки и производительность",
+        "prompt_focus": (
+            "Проанализируй производительность сайта: размер страниц, количество "
+            "запросов, оптимизацию изображений, использование кэширования, "
+            "минификацию CSS/JS, lazy loading."
+        ),
+        "keywords": [
+            "скорость", "производительность", "загрузка", "performance",
+            "кэш", "cache", "минификация", "оптимизация", "lazy",
+        ],
+    },
+    {
+        "id": "content_structure",
+        "name": "Структура контента и архив",
+        "prompt_focus": (
+            "Проанализируй организацию контента: систему категорий и тегов, "
+            "архив статей, связи между похожими статьями, оглавление внутри "
+            "длинных статей, серии статей."
+        ),
+        "keywords": [
+            "структура", "контент", "архив", "категория", "тег",
+            "оглавление", "серия", "связанные статьи", "table of contents",
+        ],
+    },
+    {
+        "id": "images",
+        "name": "Изображения и медиа",
+        "prompt_focus": (
+            "Проанализируй работу с изображениями: наличие alt-текстов, "
+            "оптимизацию размеров, использование современных форматов (WebP), "
+            "lazy loading, подписи к изображениям, галереи."
+        ),
+        "keywords": [
+            "изображен", "картинк", "фото", "alt", "webp", "галерея",
+            "медиа", "image", "lazy loading",
+        ],
+    },
+    {
+        "id": "social",
+        "name": "Социальные сети и шеринг",
+        "prompt_focus": (
+            "Проанализируй интеграцию с социальными сетями: Open Graph теги, "
+            "Twitter Card теги, кнопки шеринга, превью при расшаривании ссылок, "
+            "наличие ссылок на соцсети автора."
+        ),
+        "keywords": [
+            "социальн", "шеринг", "share", "open graph", "og:", "twitter",
+            "facebook", "telegram", "соцсет",
+        ],
+    },
+    {
+        "id": "rss",
+        "name": "RSS и подписка",
+        "prompt_focus": (
+            "Проанализируй возможности подписки на обновления: наличие и "
+            "корректность RSS/Atom фида, удобность обнаружения фида, "
+            "email-подписку, уведомления о новых статьях."
+        ),
+        "keywords": [
+            "rss", "atom", "фид", "feed", "подписк", "subscription",
+            "email", "уведомлен", "newsletter",
+        ],
+    },
+    {
+        "id": "accessibility",
+        "name": "Доступность (a11y)",
+        "prompt_focus": (
+            "Проанализируй доступность сайта: контрастность текста, "
+            "навигацию с клавиатуры, ARIA-атрибуты, альтернативные тексты, "
+            "семантическую разметку, поддержку скринридеров."
+        ),
+        "keywords": [
+            "доступност", "a11y", "accessibility", "aria", "контраст",
+            "клавиатур", "скринридер", "screen reader", "семантич",
+        ],
+    },
+    {
+        "id": "internal_links",
+        "name": "Внутренняя перелинковка",
+        "prompt_focus": (
+            "Проанализируй внутреннюю перелинковку: связи между статьями, "
+            "битые внутренние ссылки, якорные ссылки, блоки «Похожие статьи», "
+            "навигацию «предыдущая/следующая статья»."
+        ),
+        "keywords": [
+            "перелинков", "внутренн", "ссылк", "битые", "якорн",
+            "похожие статьи", "related", "internal link",
+        ],
+    },
+]
 
 
 # ---------------------------------------------------------------------------
@@ -137,23 +279,13 @@ ANALYSIS_PROMPT = ChatPromptTemplate.from_messages([
     ("system", """Ты — AI-аналитик мотоциклетного блога blog.alimov.top.
 Блог построен на Hugo (тема PaperMod) и содержит автоматически переведённые с английского статьи о мотоциклах.
 
-Твоя задача — проанализировать данные о сайте и предложить 1 конкретное улучшение.
+Твоя задача — проанализировать сайт ТОЛЬКО по одной конкретной теме и предложить 1 улучшение.
 
 Правила:
 1. Пиши ТОЛЬКО на русском языке
-2. Будь конкретным — указывай конкретные страницы, проблемы, решения
-3. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО предлагать темы из раздела «ЗАПРЕЩЁННЫЕ ТЕМЫ» ниже
-4. НЕ ДУБЛИРУЙ уже существующие предложения (список ниже)
-5. Фокусируйся на реально полезных улучшениях
-
-Темы для анализа:
-- UX/навигация сайта
-- SEO (мета-теги, заголовки, описания)
-- Структура контента (категории, теги)
-- Битые ссылки или изображения
-- Визуальное оформление
-- Скорость загрузки и производительность
-- Адаптивность (мобильные устройства)
+2. Анализируй ТОЛЬКО указанную тему — ничего другого
+3. Будь конкретным — указывай конкретные страницы, проблемы, решения
+4. Фокусируйся на реально полезных улучшениях
 
 Формат ответа — строго JSON:
 ```json
@@ -161,17 +293,13 @@ ANALYSIS_PROMPT = ChatPromptTemplate.from_messages([
   "title": "Краткий заголовок предложения (до 80 символов)",
   "body": "Полное описание проблемы и предложение по улучшению в формате Markdown"
 }}
-```
-
-Если нет стоящих предложений, верни:
-```json
-{{
-  "title": "",
-  "body": ""
-}}
 ```"""),
 
-    ("human", """=== Данные сайта ===
+    ("human", """=== Тема для анализа: {topic_name} ===
+
+{topic_focus}
+
+=== Данные сайта ===
 URL: {url}
 Заголовок: {title}
 Мета-описание: {meta_description}
@@ -186,16 +314,9 @@ URL: {url}
 --- Внутренние ссылки ({links_count}) ---
 {links}
 
-=== ЗАПРЕЩЁННЫЕ ТЕМЫ (НИКОГДА не предлагай ничего похожего!) ===
-{banned_topics}
-
-=== Уже существующие обсуждения (НЕ дублировать!) ===
-{existing_discussions}
-
 === Дата анализа: {date} ===
 
-Проанализируй и предложи 1 улучшение в JSON формате.
-НЕ предлагай ничего связанного с запрещёнными темами!"""),
+Проанализируй сайт ТОЛЬКО по теме «{topic_name}» и предложи 1 конкретное улучшение в JSON формате."""),
 ])
 
 
@@ -208,21 +329,17 @@ def _has_label(discussion: dict, label_name: str) -> bool:
     return any(l.get("name", "").lower() == label_name.lower() for l in nodes)
 
 
-def run_llm_analysis(
-    config,
-    site_data: dict,
-    discussions: list[dict],
-    rejected_titles: list[str] | None = None,
-) -> dict:
-    """Run LLM analysis on site data. Returns dict with title and body.
+def run_llm_analysis(config, site_data: dict, topic: dict) -> dict:
+    """Run LLM analysis on site data for a specific topic.
 
-    Args:
-        rejected_titles: Previously rejected suggestions to add to banned topics.
+    The topic is selected by code (deterministic); the LLM only elaborates.
+    Returns dict with title and body.
     """
     log.info("pipeline.llm_analysis",
              model=config.ollama.user_model,
              host=config.ollama.host,
-             rejected_count=len(rejected_titles) if rejected_titles else 0)
+             topic_id=topic["id"],
+             topic_name=topic["name"])
 
     llm = ChatOllama(
         model=config.ollama.user_model,
@@ -233,38 +350,9 @@ def run_llm_analysis(
 
     chain = ANALYSIS_PROMPT | llm | StrOutputParser()
 
-    # Split discussions: wontfix (banned) vs normal (existing)
-    wontfix = [d for d in discussions if _has_label(d, "wontfix")]
-    existing = [d for d in discussions if not _has_label(d, "wontfix")]
-
-    log.info("pipeline.llm_analysis.discussions_split",
-             total=len(discussions), wontfix=len(wontfix), existing=len(existing))
-
-    # Format banned topics (wontfix + previously rejected)
-    banned_text = ""
-    if wontfix:
-        for d in wontfix:
-            banned_text += f"- #{d['number']}: {d['title']}\n"
-            if d.get("body"):
-                banned_text += f"  {d['body'][:200]}\n"
-    if rejected_titles:
-        banned_text += "\nТакже ЗАПРЕЩЕНЫ следующие темы (уже отклонены):\n"
-        for rt in rejected_titles:
-            banned_text += f"- {rt}\n"
-    if not banned_text:
-        banned_text = "Нет запрещённых тем."
-
-    # Format existing discussions
-    existing_text = ""
-    if existing:
-        for d in existing:
-            existing_text += f"- #{d['number']}: {d['title']}\n"
-            if d.get("body"):
-                existing_text += f"  {d['body'][:150]}...\n"
-    else:
-        existing_text = "Пока нет обсуждений."
-
     invoke_args = {
+        "topic_name": topic["name"],
+        "topic_focus": topic["prompt_focus"],
         "url": site_data["url"],
         "title": site_data["title"],
         "meta_description": site_data["meta_description"],
@@ -273,8 +361,6 @@ def run_llm_analysis(
         "content": site_data["content"],
         "links_count": len(site_data["links"]),
         "links": "\n".join(site_data["links"]) if site_data["links"] else "Нет ссылок",
-        "banned_topics": banned_text,
-        "existing_discussions": existing_text,
         "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
 
@@ -493,14 +579,94 @@ def _is_duplicate(
 
 
 # ---------------------------------------------------------------------------
+# Topic selection — deterministic, code-driven
+# ---------------------------------------------------------------------------
+
+def _topic_is_covered(
+    topic: dict,
+    discussions: list[dict],
+    wontfix_threshold: float = 0.15,
+    normal_threshold: float = 0.25,
+) -> bool:
+    """Check if a topic from the roster is already covered by existing discussions.
+
+    Compares the topic keywords against each discussion title+body using
+    trigram Jaccard similarity.  Returns True if any discussion exceeds the
+    threshold for that topic.
+    """
+    topic_text = " ".join(topic["keywords"]) + " " + topic["name"]
+    topic_trigrams = _text_to_trigrams(topic_text)
+    if not topic_trigrams:
+        return False
+
+    for d in discussions:
+        disc_trigrams = _text_to_trigrams(f"{d['title']} {d.get('body', '')}")
+        sim = _similarity(topic_trigrams, disc_trigrams)
+
+        is_wontfix = _has_label(d, "wontfix")
+        threshold = wontfix_threshold if is_wontfix else normal_threshold
+
+        if sim >= threshold:
+            log.info("pipeline.topic_covered",
+                     topic_id=topic["id"],
+                     topic_name=topic["name"],
+                     discussion_number=d["number"],
+                     discussion_title=d["title"][:60],
+                     similarity=round(sim, 3),
+                     threshold=threshold,
+                     is_wontfix=is_wontfix)
+            return True
+
+    return False
+
+
+def _pick_topic(
+    discussions: list[dict],
+    skip_ids: set[str] | None = None,
+) -> dict | None:
+    """Pick the first uncovered topic from TOPIC_ROSTER.
+
+    Args:
+        discussions: Existing GitHub discussions to check against.
+        skip_ids: Topic IDs to skip (e.g. already tried and failed dedup).
+
+    Returns:
+        The first available topic dict, or None if all are covered.
+    """
+    skip_ids = skip_ids or set()
+
+    for topic in TOPIC_ROSTER:
+        if topic["id"] in skip_ids:
+            log.debug("pipeline.topic_skip", topic_id=topic["id"], reason="skip_ids")
+            continue
+
+        if _topic_is_covered(topic, discussions):
+            continue
+
+        log.info("pipeline.topic_selected",
+                 topic_id=topic["id"],
+                 topic_name=topic["name"])
+        return topic
+
+    log.info("pipeline.all_topics_covered",
+             roster_size=len(TOPIC_ROSTER),
+             discussions_count=len(discussions),
+             skipped=len(skip_ids))
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Pipeline orchestrator
 # ---------------------------------------------------------------------------
 
-MAX_DEDUP_RETRIES = 3  # How many times to retry LLM when suggestion is a duplicate
-
 
 def run_once(config, dry_run: bool = False):
-    """Run the full pipeline once with retries."""
+    """Run the full pipeline once with retries.
+
+    Topic selection is deterministic: code picks the topic from TOPIC_ROSTER,
+    the LLM only elaborates on it.  If the LLM's output still matches an
+    existing discussion (safety dedup), we skip that topic and try the next.
+    """
     start_time = time.monotonic()
 
     log.info("pipeline.start",
@@ -527,28 +693,33 @@ def run_once(config, dry_run: bool = False):
                 config.github.discussions_category,
             )
 
-            # Step 4: LLM analysis + dedup retry loop
-            # If the LLM suggests a duplicate, we retry with the rejected
-            # title added to the banned list so it tries a different topic.
-            rejected_titles: list[str] = []
+            # Step 4: Pick topic + LLM analysis
+            # Code picks the topic; if LLM output is still a duplicate,
+            # we mark that topic as tried and pick the next one.
+            skip_ids: set[str] = set()
 
-            for dedup_attempt in range(1, MAX_DEDUP_RETRIES + 1):
-                log.info("pipeline.llm_attempt",
-                         dedup_attempt=dedup_attempt,
-                         max_dedup_retries=MAX_DEDUP_RETRIES,
-                         rejected_so_far=len(rejected_titles))
+            while True:
+                topic = _pick_topic(discussions, skip_ids=skip_ids)
 
-                suggestion = run_llm_analysis(
-                    config, site_data, discussions,
-                    rejected_titles=rejected_titles or None,
-                )
+                if topic is None:
+                    elapsed = round(time.monotonic() - attempt_start, 1)
+                    log.info("pipeline.no_available_topic",
+                             roster_size=len(TOPIC_ROSTER),
+                             skipped=len(skip_ids),
+                             elapsed_seconds=elapsed)
+                    return (
+                        "All topics from the roster are already covered by "
+                        "existing discussions. Nothing to suggest."
+                    )
+
+                suggestion = run_llm_analysis(config, site_data, topic)
 
                 if not suggestion["title"] and not suggestion["body"]:
-                    log.info("pipeline.no_suggestion",
-                             dedup_attempt=dedup_attempt)
-                    return "LLM did not produce any suggestions this run."
+                    log.info("pipeline.no_suggestion", topic_id=topic["id"])
+                    skip_ids.add(topic["id"])
+                    continue
 
-                # Deduplication check
+                # Safety dedup check against existing discussions
                 is_dup, dup_reason = _is_duplicate(
                     suggestion["title"],
                     suggestion["body"],
@@ -556,35 +727,26 @@ def run_once(config, dry_run: bool = False):
                 )
 
                 if not is_dup:
-                    break  # Unique suggestion, proceed to post
+                    break  # Unique suggestion found
 
-                # Duplicate — add to rejected and retry
-                rejected_titles.append(suggestion["title"])
-                log.info("pipeline.dedup_retry",
-                         rejected_title=suggestion["title"][:80],
+                # Duplicate despite focused prompt — skip topic, try next
+                skip_ids.add(topic["id"])
+                log.info("pipeline.topic_dedup_skip",
+                         topic_id=topic["id"],
+                         suggestion_title=suggestion["title"][:80],
                          reason=dup_reason,
-                         dedup_attempt=dedup_attempt,
-                         max_dedup_retries=MAX_DEDUP_RETRIES)
-
-                if dedup_attempt == MAX_DEDUP_RETRIES:
-                    elapsed = round(time.monotonic() - attempt_start, 1)
-                    log.warning("pipeline.all_dedup_retries_exhausted",
-                                rejected_titles=rejected_titles,
-                                elapsed_seconds=elapsed)
-                    return (
-                        f"Skipped: LLM could not produce a unique suggestion "
-                        f"after {MAX_DEDUP_RETRIES} attempts. "
-                        f"Rejected: {rejected_titles}"
-                    )
+                         topics_remaining=len(TOPIC_ROSTER) - len(skip_ids))
 
             elapsed = round(time.monotonic() - attempt_start, 1)
 
             # Step 5: Post to GitHub
             if dry_run:
                 log.info("pipeline.dry_run.skip_post",
-                         title=suggestion["title"][:80])
+                         title=suggestion["title"][:80],
+                         topic_id=topic["id"])
                 result = (
                     f"[DRY RUN] Would create discussion:\n"
+                    f"Topic: {topic['name']}\n"
                     f"Title: {suggestion['title']}\n"
                     f"Body:\n{suggestion['body']}"
                 )
@@ -601,7 +763,9 @@ def run_once(config, dry_run: bool = False):
             log.info("pipeline.finished",
                      status="success",
                      attempt=attempt,
-                     dedup_attempts=len(rejected_titles) + 1,
+                     topic_id=topic["id"],
+                     topic_name=topic["name"],
+                     topics_skipped=len(skip_ids),
                      elapsed_seconds=elapsed,
                      total_elapsed_seconds=total_elapsed)
 
