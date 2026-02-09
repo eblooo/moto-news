@@ -18,7 +18,7 @@ class OllamaConfig:
     host: str = "http://localhost:11434"
     user_model: str = "llama3.2:3b"          # Fast model for user-agent
     admin_model: str = "deepseek-r1:8b"      # Strong reasoning for admin-agent
-    coder_model: str = "qwen2.5-coder:7b"    # For code-related tasks
+    coder_model: str = "qwen2.5-coder:7b"     # For code-related tasks
     temperature: float = 0.35
     num_ctx: int = 8192
 

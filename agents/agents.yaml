@@ -2,10 +2,10 @@
 # Copy to agents.yaml and adjust for your environment
 
 ollama:
-  host: http://localhost:11434       # Local dev; use http://ollama:11434 in K8s
-  user_model: llama3.2:3b             # Supports tool calling (3.2B, fast)
-  admin_model: llama3.2:3b           # Supports tool calling (swap to deepseek-r1:8b in prod)
-  coder_model: gemma3:latest         # For analysis (4.3B, no tools needed)
+  host: http://localhost:11434       # Local dev; use http://ollama-host-svc:11434 in K8s
+  user_model: llama3.2:3b            # Fast, supports tool calling (ReAct agent)
+  admin_model: llama3.2:3b           # Supports tool calling (LangGraph agent)
+  coder_model: qwen2.5-coder:7b     # Better reasoning for analysis tasks
   temperature: 0.35
   num_ctx: 8192
 
