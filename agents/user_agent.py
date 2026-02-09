@@ -208,11 +208,21 @@ def _has_label(discussion: dict, label_name: str) -> bool:
     return any(l.get("name", "").lower() == label_name.lower() for l in nodes)
 
 
-def run_llm_analysis(config, site_data: dict, discussions: list[dict]) -> dict:
-    """Run LLM analysis on site data. Returns dict with title and body."""
+def run_llm_analysis(
+    config,
+    site_data: dict,
+    discussions: list[dict],
+    rejected_titles: list[str] | None = None,
+) -> dict:
+    """Run LLM analysis on site data. Returns dict with title and body.
+
+    Args:
+        rejected_titles: Previously rejected suggestions to add to banned topics.
+    """
     log.info("pipeline.llm_analysis",
              model=config.ollama.user_model,
-             host=config.ollama.host)
+             host=config.ollama.host,
+             rejected_count=len(rejected_titles) if rejected_titles else 0)
 
     llm = ChatOllama(
         model=config.ollama.user_model,
@@ -230,14 +240,18 @@ def run_llm_analysis(config, site_data: dict, discussions: list[dict]) -> dict:
     log.info("pipeline.llm_analysis.discussions_split",
              total=len(discussions), wontfix=len(wontfix), existing=len(existing))
 
-    # Format banned topics (wontfix)
+    # Format banned topics (wontfix + previously rejected)
     banned_text = ""
     if wontfix:
         for d in wontfix:
             banned_text += f"- #{d['number']}: {d['title']}\n"
             if d.get("body"):
                 banned_text += f"  {d['body'][:200]}\n"
-    else:
+    if rejected_titles:
+        banned_text += "\nТакже ЗАПРЕЩЕНЫ следующие темы (уже отклонены):\n"
+        for rt in rejected_titles:
+            banned_text += f"- {rt}\n"
+    if not banned_text:
         banned_text = "Нет запрещённых тем."
 
     # Format existing discussions
@@ -482,6 +496,9 @@ def _is_duplicate(
 # Pipeline orchestrator
 # ---------------------------------------------------------------------------
 
+MAX_DEDUP_RETRIES = 3  # How many times to retry LLM when suggestion is a duplicate
+
+
 def run_once(config, dry_run: bool = False):
     """Run the full pipeline once with retries."""
     start_time = time.monotonic()
@@ -510,28 +527,57 @@ def run_once(config, dry_run: bool = False):
                 config.github.discussions_category,
             )
 
-            # Step 4: LLM analysis
-            suggestion = run_llm_analysis(config, site_data, discussions)
+            # Step 4: LLM analysis + dedup retry loop
+            # If the LLM suggests a duplicate, we retry with the rejected
+            # title added to the banned list so it tries a different topic.
+            rejected_titles: list[str] = []
+
+            for dedup_attempt in range(1, MAX_DEDUP_RETRIES + 1):
+                log.info("pipeline.llm_attempt",
+                         dedup_attempt=dedup_attempt,
+                         max_dedup_retries=MAX_DEDUP_RETRIES,
+                         rejected_so_far=len(rejected_titles))
+
+                suggestion = run_llm_analysis(
+                    config, site_data, discussions,
+                    rejected_titles=rejected_titles or None,
+                )
+
+                if not suggestion["title"] and not suggestion["body"]:
+                    log.info("pipeline.no_suggestion",
+                             dedup_attempt=dedup_attempt)
+                    return "LLM did not produce any suggestions this run."
+
+                # Deduplication check
+                is_dup, dup_reason = _is_duplicate(
+                    suggestion["title"],
+                    suggestion["body"],
+                    discussions,
+                )
+
+                if not is_dup:
+                    break  # Unique suggestion, proceed to post
+
+                # Duplicate — add to rejected and retry
+                rejected_titles.append(suggestion["title"])
+                log.info("pipeline.dedup_retry",
+                         rejected_title=suggestion["title"][:80],
+                         reason=dup_reason,
+                         dedup_attempt=dedup_attempt,
+                         max_dedup_retries=MAX_DEDUP_RETRIES)
+
+                if dedup_attempt == MAX_DEDUP_RETRIES:
+                    elapsed = round(time.monotonic() - attempt_start, 1)
+                    log.warning("pipeline.all_dedup_retries_exhausted",
+                                rejected_titles=rejected_titles,
+                                elapsed_seconds=elapsed)
+                    return (
+                        f"Skipped: LLM could not produce a unique suggestion "
+                        f"after {MAX_DEDUP_RETRIES} attempts. "
+                        f"Rejected: {rejected_titles}"
+                    )
 
             elapsed = round(time.monotonic() - attempt_start, 1)
-
-            if not suggestion["title"] and not suggestion["body"]:
-                log.info("pipeline.no_suggestion",
-                         elapsed_seconds=elapsed)
-                return "LLM did not produce any suggestions this run."
-
-            # Step 4.5: Programmatic deduplication check
-            is_dup, dup_reason = _is_duplicate(
-                suggestion["title"],
-                suggestion["body"],
-                discussions,
-            )
-            if is_dup:
-                log.info("pipeline.skipped_duplicate",
-                         title=suggestion["title"][:80],
-                         reason=dup_reason,
-                         elapsed_seconds=elapsed)
-                return f"Skipped: duplicate — {dup_reason}"
 
             # Step 5: Post to GitHub
             if dry_run:
@@ -555,6 +601,7 @@ def run_once(config, dry_run: bool = False):
             log.info("pipeline.finished",
                      status="success",
                      attempt=attempt,
+                     dedup_attempts=len(rejected_titles) + 1,
                      elapsed_seconds=elapsed,
                      total_elapsed_seconds=total_elapsed)
 

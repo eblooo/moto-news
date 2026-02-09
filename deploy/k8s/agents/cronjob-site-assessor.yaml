@@ -38,7 +38,7 @@ spec:
                       name: github-token
                       key: GITHUB_TOKEN
                 - name: OLLAMA_HOST
-                  value: "http://host.cni.cncf.io:11434"
+                  value: "http://ollama-host-svc:11434"
               volumeMounts:
                 - name: config
                   mountPath: /app/config

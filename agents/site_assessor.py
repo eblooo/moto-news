@@ -181,23 +181,27 @@ def main():
         print(f"\nReport saved to {args.output}")
 
     if args.post_discussion:
-        today = datetime.now().strftime("%Y-%m-%d")
-        title = f"Оценка сайта — {today}"
-        body = (
-            f"# Оценка сайта\n\n"
-            f"**URL:** {args.url}\n"
-            f"**Дата:** {today}\n\n"
-            f"{result}"
-        )
+        # Don't post error reports as discussions
+        if result.startswith("Error"):
+            print(f"\nSkipping discussion post: assessment failed ({result[:80]})")
+        else:
+            today = datetime.now().strftime("%Y-%m-%d")
+            title = f"Оценка сайта — {today}"
+            body = (
+                f"# Оценка сайта\n\n"
+                f"**URL:** {args.url}\n"
+                f"**Дата:** {today}\n\n"
+                f"{result}"
+            )
 
-        print(f"\nPosting discussion: {title}")
-        url = post_discussion(
-            repo=cfg.github.repo,
-            title=title,
-            body=body,
-            category=cfg.github.discussions_category,
-        )
-        print(f"Discussion posted: {url}")
+            print(f"\nPosting discussion: {title}")
+            url = post_discussion(
+                repo=cfg.github.repo,
+                title=title,
+                body=body,
+                category=cfg.github.discussions_category,
+            )
+            print(f"Discussion posted: {url}")
 
 
 if __name__ == "__main__":
