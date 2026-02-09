@@ -271,6 +271,8 @@ def run_llm_analysis(config, site_data: dict, discussions: list[dict]) -> dict:
     log.info("pipeline.llm_analysis.done",
              elapsed_seconds=elapsed,
              response_length=len(result_text))
+    log.debug("pipeline.llm_analysis.raw_response",
+              raw=result_text[:500])
 
     # Parse JSON from LLM response
     suggestion = _parse_llm_json(result_text)
@@ -346,20 +348,41 @@ def _parse_llm_json(result_text: str) -> dict:
     title_match = re.search(
         r'"title"\s*:\s*"([^"]*(?:\\.[^"]*)*)"', result_text,
     )
-    # Greedy regex: capture everything between "body": " and the last " before }
-    # This handles unescaped quotes inside body text (common with llama3.2:3b)
-    body_match = re.search(
-        r'"body"\s*:\s*"(.*)"\s*\}', result_text, re.DOTALL,
-    )
 
     if title_match:
         title = title_match.group(1).replace('\\"', '"').replace('\\n', '\n').strip()
+
+        # Try multiple body extraction strategies
         body = ""
+
+        # 4a: Greedy regex — captures between "body": " and last " before }
+        body_match = re.search(
+            r'"body"\s*:\s*"(.+)"\s*\}', result_text, re.DOTALL,
+        )
         if body_match:
             body = body_match.group(1).replace('\\"', '"').replace('\\n', '\n').strip()
+
+        # 4b: If body is empty, the LLM likely wrote "body": "" then text outside quotes
+        #     Extract everything after "body": "" up to closing }
+        if not body:
+            body_fallback = re.search(
+                r'"body"\s*:\s*"*\s*(.*?)\s*"*\s*\}', result_text, re.DOTALL,
+            )
+            if body_fallback:
+                body = body_fallback.group(1).strip().strip('"').strip()
+
+        # 4c: Last resort — take all text after the title, strip JSON artifacts
+        if not body:
+            after_title = result_text.split(title, 1)[-1] if title in result_text else result_text
+            body = re.sub(r'[{}"\\]', '', after_title)
+            body = re.sub(r'\b(title|body)\b\s*:\s*', '', body)
+            body = re.sub(r'```json\s*', '', body)
+            body = re.sub(r'```\s*', '', body)
+            body = body.strip(' \n,')
+
         if title:
             log.info("pipeline.parse.regex_ok", title_preview=title[:80],
-                     has_body=bool(body))
+                     has_body=bool(body), body_preview=body[:80] if body else "")
             return {"title": title, "body": body}
 
     # Step 5: Final fallback — extract first meaningful line as title
@@ -382,15 +405,25 @@ def _parse_llm_json(result_text: str) -> dict:
 # Programmatic deduplication
 # ---------------------------------------------------------------------------
 
-def _normalize_words(text: str) -> set[str]:
-    """Normalize text to a set of lowercase words, stripping punctuation."""
-    # Remove punctuation, lowercase, split into words
-    cleaned = re.sub(r'[^\w\s]', ' ', text.lower())
-    # Filter out short words (articles, prepositions) and digits
-    return {w for w in cleaned.split() if len(w) > 2}
+def _text_to_trigrams(text: str) -> set[str]:
+    """Convert text to a set of character trigrams.
+
+    Uses trigrams instead of whole words to handle Russian morphology:
+    'улучшение' and 'улучшению' share most trigrams even though
+    they are different word forms.
+    """
+    cleaned = re.sub(r'[^\w\s]', '', text.lower())
+    # Build trigrams from each word (avoids cross-word trigrams)
+    trigrams = set()
+    for word in cleaned.split():
+        if len(word) < 3:
+            continue
+        for i in range(len(word) - 2):
+            trigrams.add(word[i:i + 3])
+    return trigrams
 
 
-def _jaccard_similarity(set_a: set, set_b: set) -> float:
+def _similarity(set_a: set, set_b: set) -> float:
     """Compute Jaccard similarity between two sets."""
     if not set_a or not set_b:
         return 0.0
@@ -403,29 +436,30 @@ def _is_duplicate(
     title: str,
     body: str,
     discussions: list[dict],
-    wontfix_threshold: float = 0.15,
-    normal_threshold: float = 0.3,
+    wontfix_threshold: float = 0.20,
+    normal_threshold: float = 0.35,
 ) -> tuple[bool, str]:
     """Check if a suggestion is too similar to existing discussions.
 
-    Uses stricter threshold for wontfix discussions (even loosely related = blocked).
+    Uses character trigrams for comparison (handles Russian morphology).
+    Stricter threshold for wontfix discussions (even loosely related = blocked).
     Returns (is_duplicate, reason) tuple.
     """
-    suggestion_words = _normalize_words(f"{title} {body}")
-    if not suggestion_words:
+    suggestion_trigrams = _text_to_trigrams(f"{title} {body}")
+    if not suggestion_trigrams:
         return False, ""
 
     for d in discussions:
-        disc_words = _normalize_words(f"{d['title']} {d.get('body', '')}")
-        similarity = _jaccard_similarity(suggestion_words, disc_words)
+        disc_trigrams = _text_to_trigrams(f"{d['title']} {d.get('body', '')}")
+        sim = _similarity(suggestion_trigrams, disc_trigrams)
 
         is_wontfix = _has_label(d, "wontfix")
         threshold = wontfix_threshold if is_wontfix else normal_threshold
 
-        if similarity >= threshold:
+        if sim >= threshold:
             reason = (
                 f"Similar to #{d['number']} '{d['title'][:60]}' "
-                f"(similarity={similarity:.2f}, "
+                f"(similarity={sim:.2f}, "
                 f"threshold={threshold}, "
                 f"{'wontfix' if is_wontfix else 'existing'})"
             )
@@ -433,11 +467,14 @@ def _is_duplicate(
                         suggestion_title=title[:60],
                         existing_number=d["number"],
                         existing_title=d["title"][:60],
-                        similarity=round(similarity, 3),
+                        similarity=round(sim, 3),
                         threshold=threshold,
                         is_wontfix=is_wontfix)
             return True, reason
 
+    log.info("pipeline.dedup.unique",
+             suggestion_title=title[:60],
+             checked=len(discussions))
     return False, ""
 
 
