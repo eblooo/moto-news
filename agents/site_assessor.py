@@ -98,12 +98,19 @@ def run_assessment(url: str, config_path: Optional[str] = None) -> str:
     print(f"  Ollama: {cfg.ollama.host}")
     print()
 
-    # Fetch site data
+    # Fetch site data (with retries for transient DNS failures in K8s)
     print("  Fetching site data...")
-    try:
-        page = fetch_page(url)
-    except Exception as e:
-        return f"Error fetching site: {e}"
+    page = None
+    for fetch_attempt in range(1, 4):
+        try:
+            page = fetch_page(url)
+            break
+        except Exception as e:
+            print(f"  Fetch attempt {fetch_attempt}/3 failed: {e}")
+            if fetch_attempt < 3:
+                time.sleep(10)
+            else:
+                return f"Error fetching site after 3 attempts: {e}"
 
     print(f"  Title: {page.title}")
     print(f"  Word count: {page.word_count}")
