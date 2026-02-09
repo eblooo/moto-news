@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime
@@ -237,6 +238,47 @@ def run_llm_analysis(config, site_data: dict, discussions: list[dict]) -> dict:
              response_length=len(result_text))
 
     # Parse JSON from LLM response
+    suggestion = _parse_llm_json(result_text)
+
+    log.info("pipeline.llm_analysis.parsed",
+             has_title=bool(suggestion["title"]),
+             has_body=bool(suggestion["body"]),
+             title_preview=suggestion["title"][:80])
+
+    return suggestion
+
+
+def _sanitize_json_string(json_str: str) -> str:
+    """Fix common LLM JSON issues: unescaped newlines inside string values."""
+    # Replace literal newlines that appear inside JSON string values
+    # by processing character-by-character
+    result = []
+    in_string = False
+    escape_next = False
+    for ch in json_str:
+        if escape_next:
+            result.append(ch)
+            escape_next = False
+            continue
+        if ch == '\\':
+            result.append(ch)
+            escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            result.append(ch)
+            continue
+        if in_string and ch == '\n':
+            result.append('\\n')
+            continue
+        result.append(ch)
+    return ''.join(result)
+
+
+def _parse_llm_json(result_text: str) -> dict:
+    """Parse JSON from LLM response with multiple fallback strategies."""
+
+    # Step 1: Extract JSON from markdown code blocks
     json_str = result_text
     if "```json" in json_str:
         json_str = json_str.split("```json")[1].split("```")[0]
@@ -245,26 +287,57 @@ def run_llm_analysis(config, site_data: dict, discussions: list[dict]) -> dict:
         if len(parts) >= 2:
             json_str = parts[1]
 
+    # Step 2: Try direct json.loads
     try:
         suggestion = json.loads(json_str.strip())
         title = suggestion.get("title", "").strip()
         body = suggestion.get("body", "").strip()
-
-        log.info("pipeline.llm_analysis.parsed",
-                 has_title=bool(title), has_body=bool(body),
-                 title_preview=title[:80])
-
         return {"title": title, "body": body}
+    except json.JSONDecodeError:
+        log.debug("pipeline.parse.direct_json_failed")
 
-    except json.JSONDecodeError as e:
-        log.warning("pipeline.llm_analysis.json_parse_failed",
-                    error=str(e),
-                    raw_response=result_text[:300])
-        # Fallback: use raw text as body
-        return {
-            "title": "Предложение по улучшению блога",
-            "body": result_text.strip(),
-        }
+    # Step 3: Sanitize (fix unescaped newlines) and retry json.loads
+    try:
+        sanitized = _sanitize_json_string(json_str.strip())
+        suggestion = json.loads(sanitized)
+        title = suggestion.get("title", "").strip()
+        body = suggestion.get("body", "").strip()
+        log.info("pipeline.parse.sanitized_json_ok")
+        return {"title": title, "body": body}
+    except json.JSONDecodeError:
+        log.debug("pipeline.parse.sanitized_json_failed")
+
+    # Step 4: Regex extraction of "title" and "body" fields
+    title_match = re.search(
+        r'"title"\s*:\s*"([^"]*(?:\\.[^"]*)*)"', result_text,
+    )
+    body_match = re.search(
+        r'"body"\s*:\s*"((?:[^"\\]|\\.)*)"', result_text, re.DOTALL,
+    )
+
+    if title_match:
+        title = title_match.group(1).replace('\\"', '"').replace('\\n', '\n').strip()
+        body = ""
+        if body_match:
+            body = body_match.group(1).replace('\\"', '"').replace('\\n', '\n').strip()
+        if title:
+            log.info("pipeline.parse.regex_ok", title_preview=title[:80])
+            return {"title": title, "body": body}
+
+    # Step 5: Final fallback — extract first meaningful line as title
+    log.warning("pipeline.parse.all_strategies_failed",
+                raw_response=result_text[:300])
+    lines = [
+        l.strip() for l in result_text.strip().splitlines()
+        if l.strip() and not l.strip().startswith(('{', '}', '"', '```'))
+    ]
+    fallback_title = lines[0][:80] if lines else "Предложение по улучшению блога"
+    # Clean body: remove JSON artifacts
+    clean_body = re.sub(r'```json\s*', '', result_text)
+    clean_body = re.sub(r'```\s*', '', clean_body)
+    clean_body = clean_body.strip()
+
+    return {"title": fallback_title, "body": clean_body}
 
 
 # ---------------------------------------------------------------------------
