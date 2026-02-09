@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -106,7 +107,7 @@ def run_assessment(url: str, config_path: Optional[str] = None) -> str:
     print(f"  Headings: {len(page.headings)}")
     print()
 
-    # Run LLM analysis
+    # Run LLM analysis with retries
     print("  Running LLM analysis (this may take a while on CPU)...")
     chain = create_assessment_chain(
         model=cfg.ollama.coder_model,
@@ -114,7 +115,7 @@ def run_assessment(url: str, config_path: Optional[str] = None) -> str:
         temperature=cfg.ollama.temperature,
     )
 
-    result = chain.invoke({
+    invoke_args = {
         "url": url,
         "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "title": page.title,
@@ -124,10 +125,24 @@ def run_assessment(url: str, config_path: Optional[str] = None) -> str:
         "content": page.content[:3000],
         "links_count": len(page.links),
         "links": "\n".join(page.links[:15]),
-    })
+    }
 
-    print("  Analysis complete!")
-    return result
+    max_retries = 3
+    last_error = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            result = chain.invoke(invoke_args)
+            print("  Analysis complete!")
+            return result
+        except Exception as e:
+            last_error = e
+            print(f"  Attempt {attempt}/{max_retries} failed: {e}")
+            if attempt < max_retries:
+                delay = 15 * attempt
+                print(f"  Retrying in {delay}s...")
+                time.sleep(delay)
+
+    return f"Error after {max_retries} retries: {last_error}"
 
 
 def main():

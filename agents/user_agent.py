@@ -42,6 +42,9 @@ from tools.github_discussions import (
 
 log = structlog.get_logger()
 
+MAX_RETRIES = 3
+RETRY_DELAY_SECONDS = 15
+
 
 SYSTEM_PROMPT = """Ты — AI-помощник для мотоциклетного блога blog.alimov.top.
 Блог построен на Hugo (тема PaperMod) и содержит автоматически переведённые с английского статьи о мотоциклах.
@@ -100,13 +103,11 @@ def create_user_agent(config):
 
 
 def run_once(config, dry_run: bool = False):
-    """Run the user agent once."""
+    """Run the user agent once with retries."""
     log.info("user_agent.run_start",
              model=config.ollama.user_model,
              host=config.ollama.host,
              site=config.site.url)
-
-    agent = create_user_agent(config)
 
     task = f"""Выполни следующие шаги:
 
@@ -122,13 +123,11 @@ def run_once(config, dry_run: bool = False):
 
     if dry_run:
         task += """
-
 ВАЖНО: Это тестовый запуск (dry-run).
 НЕ создавай комментарии или обсуждения в GitHub.
 Вместо этого просто опиши, что ты бы предложил."""
     else:
         task += """
-
 5. Если нашёл что-то стоящее — создай новое обсуждение или добавь комментарий.
    - Используй create_discussion для нового предложения
    - Или create_discussion_comment для дополнения существующего
@@ -136,16 +135,30 @@ def run_once(config, dry_run: bool = False):
 
     messages = [HumanMessage(content=task)]
 
-    log.info("user_agent.invoking_agent")
+    last_error = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            log.info("user_agent.invoking_agent", attempt=attempt)
+            agent = create_user_agent(config)
+            result = agent.invoke({"messages": messages})
+            final_message = result["messages"][-1].content
+            log.info("user_agent.completed", result_length=len(final_message))
+            return final_message
+        except Exception as e:
+            last_error = e
+            log.warning("user_agent.attempt_failed",
+                        attempt=attempt,
+                        max_retries=MAX_RETRIES,
+                        error=str(e))
+            if attempt < MAX_RETRIES:
+                delay = RETRY_DELAY_SECONDS * attempt
+                log.info("user_agent.retrying", delay_seconds=delay)
+                time.sleep(delay)
 
-    try:
-        result = agent.invoke({"messages": messages})
-        final_message = result["messages"][-1].content
-        log.info("user_agent.completed", result_length=len(final_message))
-        return final_message
-    except Exception as e:
-        log.error("user_agent.error", error=str(e))
-        return f"Error: {e}"
+    log.error("user_agent.all_retries_failed",
+              max_retries=MAX_RETRIES,
+              error=str(last_error))
+    return f"Error after {MAX_RETRIES} retries: {last_error}"
 
 
 def run_periodic(config, dry_run: bool = False):
