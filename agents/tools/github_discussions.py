@@ -1,6 +1,6 @@
 """
 Tool for interacting with GitHub Discussions.
-Reads and writes comments in the "For Developers" category.
+Reads and writes comments in the "Ideas" category.
 """
 
 from __future__ import annotations
@@ -75,7 +75,7 @@ def _graphql_query(query: str, variables: Optional[Dict] = None) -> dict:
 @tool
 def list_discussions(
     repo: str = "KlimDos/my-blog",
-    category: str = "For Developers",
+    category: str = "Ideas",
     limit: int = 10,
 ) -> str:
     """
@@ -302,7 +302,7 @@ def create_discussion(
     repo: str = "KlimDos/my-blog",
     title: str = "",
     body: str = "",
-    category: str = "For Developers",
+    category: str = "Ideas",
 ) -> str:
     """
     Create a new GitHub Discussion in the specified category.

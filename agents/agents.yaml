@@ -12,7 +12,7 @@ ollama:
 github:
   # token: set via GITHUB_TOKEN env var
   repo: KlimDos/my-blog
-  discussions_category: For Developers
+  discussions_category: Ideas
 
 site:
   url: https://blog.alimov.top

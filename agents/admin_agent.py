@@ -3,7 +3,7 @@ Stage 3: Admin Agent — LangGraph agent with human approval.
 
 Workflow (LangGraph state machine):
 1. assess_site   → snapshot of site + recent commits
-2. read_discussions → new comments in "For Developers" category
+2. read_discussions → new comments in "Ideas" category
 3. analyze        → LLM decides what to implement
 4. generate_changes → creates diff / new .md / edits hugo.toml
 5. human_approval  → waits for approval (file-based or API)
@@ -134,10 +134,10 @@ def read_discussions(state: AdminState) -> dict:
             "limit": 10,
         })
         discussions = data["repository"]["discussions"]["nodes"]
-        # Filter to "For Developers"
+        # Filter to "Ideas"
         discussions = [
             d for d in discussions
-            if d["category"]["name"].lower() == "for developers"
+            if d["category"]["name"].lower() == "ideas"
         ]
         log.info("admin.read_discussions.done", count=len(discussions))
         return {"discussions": discussions}
