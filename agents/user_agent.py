@@ -274,7 +274,7 @@ def fetch_site_data(url: str) -> dict:
     # --- Source code context (from GitHub repos) ---
     src = fetch_source_context(
         blog_repo="KlimDos/my-blog",
-        aggregator_repo="KlimDos/moto-news",
+        aggregator_repo="eblooo/moto-news",
     )
 
     source_text = ""

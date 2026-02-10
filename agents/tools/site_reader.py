@@ -551,9 +551,47 @@ class SourceContext:
     content_tree: str = ""         # Directory listing of content/
 
 
+# Fallback data for when the aggregator repo is private / inaccessible.
+_CATEGORY_MAP_FALLBACK = """\
+Category EN -> RU mapping (from aggregator formatter):
+  news -> Новости
+  reviews -> Обзоры
+  features -> Статьи
+  sportbikes -> Спортбайки
+  cruisers -> Круизеры
+  adventure -> Эндуро
+  touring -> Туринг
+  naked -> Нейкеды
+  electric -> Электромотоциклы
+  racing -> Гонки
+  gear -> Экипировка
+  technology -> Технологии
+  industry -> Индустрия
+  custom -> Кастом
+  adventure-and-dual-sport -> Эндуро
+  touring-and-sport-touring -> Туринг
+  standard-and-naked -> Нейкеды
+  electric-motorcycles -> Электромотоциклы
+
+File path: content/posts/YYYY/MM/slug.md
+Hugo theme: PaperMod
+"""
+
+_AGG_CONFIG_FALLBACK = """\
+Aggregator config summary:
+- RSS sources: rideapart.com (news, reviews, features feeds)
+- Translator: DeepL (free tier) or Ollama (gemma2:9b)
+- Translation style: professional moto-journalism in Russian
+- Hugo blog repo: KlimDos/my-blog (auto-deploy via GitHub Actions)
+- Article file structure: content/posts/YYYY/MM/slug.md
+- Frontmatter: title, date, categories, tags, source URL, author, cover image
+- Auto-commit after publish
+"""
+
+
 def fetch_source_context(
     blog_repo: str = "KlimDos/my-blog",
-    aggregator_repo: str = "KlimDos/moto-news",
+    aggregator_repo: str = "eblooo/moto-news",
 ) -> SourceContext:
     """Fetch key source files from GitHub repos for analysis.
 
@@ -639,12 +677,20 @@ def fetch_source_context(
     if formatter:
         ctx.category_map = formatter
         log.info("fetch_source_context.formatter", length=len(formatter))
+    else:
+        # Fallback: aggregator repo may be private — embed key category map
+        ctx.category_map = _CATEGORY_MAP_FALLBACK
+        log.info("fetch_source_context.formatter_fallback")
 
     # 5. Aggregator config (translation prompts, RSS feeds)
     agg_config = _github_get_file(aggregator_repo, "config.yaml")
     if agg_config:
         ctx.aggregator_config = agg_config
         log.info("fetch_source_context.aggregator_config", length=len(agg_config))
+    else:
+        # Fallback: embed essential config info
+        ctx.aggregator_config = _AGG_CONFIG_FALLBACK
+        log.info("fetch_source_context.aggregator_config_fallback")
 
     log.info("fetch_source_context.done",
              has_hugo_config=bool(ctx.hugo_config),
