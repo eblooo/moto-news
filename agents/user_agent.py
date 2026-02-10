@@ -37,7 +37,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 from config import load_config
-from tools.site_reader import fetch_page
+from tools.site_reader import build_site_report, fetch_page, fetch_source_context
 from tools.github_discussions import (
     _graphql_query,
     _get_headers,
@@ -194,25 +194,152 @@ TOPIC_ROSTER: list[dict] = [
 # ---------------------------------------------------------------------------
 
 def fetch_site_data(url: str) -> dict:
-    """Fetch site snapshot and structure. Returns dict with site info."""
+    """Build a comprehensive site report and return a flat dict for the LLM.
+
+    Uses build_site_report() to crawl the homepage, sample articles,
+    check technical endpoints, HTTP headers, structured data, and
+    optionally call PageSpeed Insights.
+    """
     log.info("pipeline.fetch_site", url=url)
 
-    page = fetch_page(url)
+    report = build_site_report(url, max_articles=2, include_pagespeed=True)
+    hp = report.homepage
+
+    # --- Format article summaries ---
+    article_summaries = ""
+    for art in report.articles:
+        article_summaries += (
+            f"\n### {art.title}\n"
+            f"URL: {art.url}\n"
+            f"Слов: {art.word_count}, Заголовков: {len(art.headings)}\n"
+            f"Контент: {art.content[:1000]}...\n"
+        )
+
+    # --- Format structured data ---
+    sd = report.structured_data
+    sd_text = ""
+    if sd.og_tags:
+        sd_text += "Open Graph теги:\n"
+        for k, v in sd.og_tags.items():
+            sd_text += f"  {k}: {v}\n"
+    else:
+        sd_text += "Open Graph теги: НЕ НАЙДЕНЫ\n"
+
+    if sd.twitter_tags:
+        sd_text += "Twitter Card теги:\n"
+        for k, v in sd.twitter_tags.items():
+            sd_text += f"  {k}: {v}\n"
+    else:
+        sd_text += "Twitter Card теги: НЕ НАЙДЕНЫ\n"
+
+    if sd.json_ld:
+        sd_text += f"JSON-LD разметка: {len(sd.json_ld)} блок(ов)\n"
+    else:
+        sd_text += "JSON-LD разметка: НЕ НАЙДЕНА\n"
+
+    sd_text += f"Canonical: {sd.canonical or 'НЕ ЗАДАН'}\n"
+    sd_text += f"RSS фид: {sd.rss_feed or 'НЕ НАЙДЕН'}\n"
+    sd_text += f"Язык (html lang): {sd.lang or 'НЕ ЗАДАН'}\n"
+
+    # --- Format HTTP headers ---
+    h = report.headers
+    headers_text = (
+        f"Server: {h.server or 'не указан'}\n"
+        f"Cache-Control: {h.cache_control or 'не задан'}\n"
+        f"Content-Encoding: {h.content_encoding or 'нет сжатия'}\n"
+        f"Strict-Transport-Security: {h.strict_transport_security or 'не задан'}\n"
+        f"X-Frame-Options: {h.x_frame_options or 'не задан'}\n"
+        f"Content-Security-Policy: {h.content_security_policy or 'не задан'}\n"
+    )
+
+    # --- Format PageSpeed ---
+    pagespeed_text = ""
+    if report.pagespeed:
+        ps = report.pagespeed
+        if ps.get("scores"):
+            pagespeed_text += "Lighthouse оценки (мобильная версия):\n"
+            for name, score in ps["scores"].items():
+                pagespeed_text += f"  {name}: {score}/100\n"
+        if ps.get("metrics"):
+            pagespeed_text += "Ключевые метрики:\n"
+            for name, value in ps["metrics"].items():
+                pagespeed_text += f"  {name}: {value}\n"
+        if ps.get("failed_audits"):
+            pagespeed_text += "Проблемы (не прошедшие проверки):\n"
+            for item in ps["failed_audits"][:10]:
+                pagespeed_text += f"  {item}\n"
+    else:
+        pagespeed_text = "PageSpeed данные недоступны\n"
+
+    # --- Source code context (from GitHub repos) ---
+    src = fetch_source_context(
+        blog_repo="KlimDos/my-blog",
+        aggregator_repo="KlimDos/moto-news",
+    )
+
+    source_text = ""
+    if src.hugo_config:
+        source_text += f"=== Hugo конфиг сайта ===\n{src.hugo_config[:2000]}\n\n"
+    if src.content_tree:
+        source_text += f"=== Структура контента (файлы) ===\n{src.content_tree}\n\n"
+    if src.sample_articles:
+        source_text += "=== Примеры исходников статей (markdown + frontmatter) ===\n"
+        for art_src in src.sample_articles:
+            source_text += f"{art_src}\n\n"
+    if src.category_map:
+        # Extract just the category mapping function, not the whole file
+        if "translateCategory" in src.category_map:
+            start = src.category_map.find("func (f *MarkdownFormatter) translateCategory")
+            if start >= 0:
+                end = src.category_map.find("\n}", start)
+                if end >= 0:
+                    source_text += (
+                        f"=== Маппинг категорий (из исходного кода) ===\n"
+                        f"{src.category_map[start:end + 2]}\n\n"
+                    )
+        else:
+            source_text += f"=== Форматтер статей ===\n{src.category_map[:2000]}\n\n"
+    if src.aggregator_config:
+        source_text += (
+            f"=== Конфиг агрегатора (RSS-источники, перевод) ===\n"
+            f"{src.aggregator_config[:3000]}\n\n"
+        )
+
+    if not source_text:
+        source_text = "Исходный код недоступен (нет GITHUB_TOKEN или ошибка API)\n"
+
+    # Cap source context to ~3000 chars to stay within LLM context window
+    if len(source_text) > 3000:
+        source_text = source_text[:3000] + "\n... (обрезано для экономии контекста)"
 
     log.info("pipeline.fetch_site.done",
-             title=page.title[:60],
-             word_count=page.word_count,
-             links=len(page.links),
-             headings=len(page.headings))
+             title=hp.title[:60],
+             word_count=hp.word_count,
+             links=len(hp.links),
+             headings=len(hp.headings),
+             articles=len(report.articles),
+             sitemap_pages=len(report.sitemap_urls),
+             has_pagespeed=report.pagespeed is not None,
+             has_source_context=bool(source_text))
 
     return {
         "url": url,
-        "title": page.title,
-        "meta_description": page.meta_description,
-        "word_count": page.word_count,
-        "headings": page.headings[:20],
-        "content": page.content[:3000],
-        "links": page.links[:20],
+        "title": hp.title,
+        "meta_description": hp.meta_description,
+        "word_count": hp.word_count,
+        "headings": hp.headings[:20],
+        "content": hp.content[:3000],
+        "links": hp.links[:20],
+        # Enriched fields
+        "sitemap_page_count": len(report.sitemap_urls),
+        "articles": article_summaries or "Статьи не загружены",
+        "structured_data": sd_text,
+        "http_headers": headers_text,
+        "robots_txt": report.robots_txt[:500] if report.robots_txt else "Не найден",
+        "pagespeed": pagespeed_text,
+        "has_rss": report.has_rss,
+        # Source code context
+        "source_context": source_text,
     }
 
 
@@ -280,11 +407,14 @@ ANALYSIS_PROMPT = ChatPromptTemplate.from_messages([
 Блог построен на Hugo (тема PaperMod) и содержит автоматически переведённые с английского статьи о мотоциклах.
 
 Твоя задача — проанализировать сайт ТОЛЬКО по одной конкретной теме и предложить 1 улучшение.
+Тебе предоставлены реальные технические данные: HTTP-заголовки, метаданные, Lighthouse-оценки,
+содержимое нескольких страниц, а также исходный код проекта (Hugo конфиг, шаблоны статей,
+конфиг агрегатора). Используй ВСЕ данные для конкретных выводов.
 
 Правила:
 1. Пиши ТОЛЬКО на русском языке
 2. Анализируй ТОЛЬКО указанную тему — ничего другого
-3. Будь конкретным — указывай конкретные страницы, проблемы, решения
+3. Будь конкретным — ссылайся на конкретные данные из отчёта
 4. Фокусируйся на реально полезных улучшениях
 
 Формат ответа — строго JSON:
@@ -303,20 +433,40 @@ ANALYSIS_PROMPT = ChatPromptTemplate.from_messages([
 URL: {url}
 Заголовок: {title}
 Мета-описание: {meta_description}
-Количество слов: {word_count}
+Количество слов на главной: {word_count}
+Всего страниц в sitemap: {sitemap_page_count}
 
---- Заголовки на странице ---
+--- Заголовки на главной ---
 {headings}
 
---- Контент (первые 3000 символов) ---
+--- Контент главной (первые 3000 символов) ---
 {content}
 
 --- Внутренние ссылки ({links_count}) ---
 {links}
 
+--- Примеры статей ---
+{articles}
+
+--- Структурированные данные (OG, Twitter, JSON-LD, RSS) ---
+{structured_data}
+
+--- HTTP-заголовки ответа ---
+{http_headers}
+
+--- robots.txt ---
+{robots_txt}
+
+--- Google PageSpeed Insights ---
+{pagespeed}
+
+--- Исходный код проекта ---
+{source_context}
+
 === Дата анализа: {date} ===
 
-Проанализируй сайт ТОЛЬКО по теме «{topic_name}» и предложи 1 конкретное улучшение в JSON формате."""),
+Проанализируй сайт ТОЛЬКО по теме «{topic_name}» и предложи 1 конкретное улучшение в JSON формате.
+Используй данные из исходного кода для конкретных предложений (какие файлы изменить, какие настройки добавить)."""),
 ])
 
 
@@ -357,10 +507,17 @@ def run_llm_analysis(config, site_data: dict, topic: dict) -> dict:
         "title": site_data["title"],
         "meta_description": site_data["meta_description"],
         "word_count": site_data["word_count"],
+        "sitemap_page_count": site_data.get("sitemap_page_count", "N/A"),
         "headings": "\n".join(site_data["headings"]) if site_data["headings"] else "Нет заголовков",
         "content": site_data["content"],
         "links_count": len(site_data["links"]),
         "links": "\n".join(site_data["links"]) if site_data["links"] else "Нет ссылок",
+        "articles": site_data.get("articles", "Нет данных"),
+        "structured_data": site_data.get("structured_data", "Нет данных"),
+        "http_headers": site_data.get("http_headers", "Нет данных"),
+        "robots_txt": site_data.get("robots_txt", "Нет данных"),
+        "pagespeed": site_data.get("pagespeed", "Нет данных"),
+        "source_context": site_data.get("source_context", "Нет данных"),
         "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
 
