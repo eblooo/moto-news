@@ -123,15 +123,17 @@ def is_already_processed(discussion: dict) -> bool:
 # Step 2: Fetch source code context for the target repo
 # ---------------------------------------------------------------------------
 
-def fetch_repo_tree(repo: str, path: str = "", ref: str = "main") -> list[str]:
+def fetch_repo_tree(repo: str, path: str = "", ref: str = "main",
+                    token: Optional[str] = None) -> list[str]:
     """Recursively list files in a repo directory. Returns list of paths.
 
     Includes retries for transient network failures.
     """
     import httpx
 
+    t = token or _token_for_repo(repo) or os.getenv("GITHUB_TOKEN", "")
     headers = {
-        "Authorization": f"Bearer {os.getenv('GITHUB_TOKEN', '')}",
+        "Authorization": f"Bearer {t}",
         "Accept": "application/vnd.github.v3+json",
     }
 
@@ -169,11 +171,12 @@ def fetch_context_for_discussion(
     - Key config files
     - Files that might be relevant based on the discussion text
     """
+    repo_token = _token_for_repo(target_repo)
     context_parts = []
 
     # 1. File tree
     try:
-        tree = fetch_repo_tree(target_repo)
+        tree = fetch_repo_tree(target_repo, token=repo_token)
         # Show truncated tree
         tree_text = "\n".join(tree[:200])
         if len(tree) > 200:
@@ -197,7 +200,7 @@ def fetch_context_for_discussion(
 
     for fpath in key_files:
         try:
-            content, _ = get_file_content(target_repo, fpath)
+            content, _ = get_file_content(target_repo, fpath, token=repo_token)
             context_parts.append(f"=== {fpath} ===\n{content[:3000]}")
             log.info("admin.context.file_ok", path=fpath)
         except Exception:
@@ -229,7 +232,8 @@ def fetch_context_for_discussion(
             for fpath in paths:
                 if fpath not in fetched_extra:
                     try:
-                        content, _ = get_file_content(target_repo, fpath)
+                        content, _ = get_file_content(
+                            target_repo, fpath, token=repo_token)
                         context_parts.append(
                             f"=== {fpath} (keyword match: '{keyword}') ===\n"
                             f"{content[:4000]}"
@@ -467,22 +471,55 @@ def comment_on_discussion(repo: str, discussion_number: int, pr_url: str) -> Non
 def determine_target_repo(discussion: dict) -> str:
     """Determine which repo to create the PR in based on discussion content.
 
-    Heuristic: if the suggestion is about Hugo/blog/frontend, target the blog repo.
-    If it's about aggregator/fetcher/translator/agents code, target moto-news.
+    Heuristic: check blog-specific keywords first (higher priority),
+    then moto-news keywords. Default is blog repo.
     """
     text = f"{discussion['title']} {discussion.get('body', '')}".lower()
 
+    # Blog-specific keywords take priority — if these appear, it's a blog change
+    blog_keywords = [
+        "hugo", "papermod", "robots.txt", "robots", "sitemap",
+        "seo", "мета-тег", "meta", "навигац", "меню",
+        "css", "шрифт", "font", "layout", "шаблон", "template",
+        "static/", "layouts/", "config.toml", "config.yaml",
+        "favicon", "manifest", "pwa",
+    ]
+    for kw in blog_keywords:
+        if kw in text:
+            log.info("admin.target_repo.blog_match", keyword=kw)
+            return "KlimDos/my-blog"
+
+    # Aggregator/agents-specific keywords
     moto_news_keywords = [
-        "aggregat", "fetcher", "rss", "scraper", "translator", "перевод",
-        "markdown", "formatter", "sqlite", "publisher", "agent", "pipeline",
-        "go ", "golang", "internal/",
+        "aggregat", "fetcher", "scraper", "translator", "перевод",
+        "markdown formatter", "sqlite", "publisher",
+        "golang", "internal/", "go.mod",
     ]
     for kw in moto_news_keywords:
         if kw in text:
+            log.info("admin.target_repo.moto_news_match", keyword=kw)
             return "eblooo/moto-news"
 
     # Default: blog repo (most suggestions target the Hugo site)
+    log.info("admin.target_repo.default_blog")
     return "KlimDos/my-blog"
+
+
+def _token_for_repo(repo: str) -> Optional[str]:
+    """Return the correct GitHub token for write access to the given repo.
+
+    - eblooo/moto-news  -> EBLOOO_GH_TOKEN
+    - KlimDos/my-blog   -> GITHUB_TOKEN (GIT_TOKEN from Doppler)
+    - anything else      -> GITHUB_TOKEN (fallback)
+    """
+    if repo.startswith("eblooo/"):
+        token = os.getenv("EBLOOO_GH_TOKEN", "")
+        if token:
+            log.info("admin.token_for_repo", repo=repo, token_source="EBLOOO_GH_TOKEN")
+            return token
+        log.warning("admin.token_for_repo.missing",
+                    repo=repo, expected_env="EBLOOO_GH_TOKEN")
+    return None  # falls back to GITHUB_TOKEN inside github_pr helpers
 
 
 def process_discussion(
@@ -610,6 +647,7 @@ def process_discussion(
         try:
             log.info("admin.process.creating_pr",
                      discussion=number, attempt=attempt, branch=branch)
+            repo_token = _token_for_repo(target_repo)
             pr = apply_changes_as_pr(
                 repo=target_repo,
                 branch_name=branch,
@@ -620,6 +658,7 @@ def process_discussion(
                     f"[#{number}]({discussion['url']})_"
                 ),
                 files=files,
+                token=repo_token,
             )
             pr_url = pr["html_url"]
             elapsed = round(time.monotonic() - start_time, 1)
