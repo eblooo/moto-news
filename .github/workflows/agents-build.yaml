@@ -55,22 +55,3 @@ jobs:
 
     - name: Cleanup Docker environment
       run: docker builder prune --force
-
-    - name: Update image tag in home-k8s
-      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-      run: |
-        set -e
-        git clone https://x-access-token:${{ secrets.HOME_K8S_TOKEN }}@github.com/KlimDos/home-k8s.git /tmp/home-k8s
-        cd /tmp/home-k8s
-
-        # Update all agent cronjob manifests with the exact version tag
-        sed -i "s|image: klimdos/moto-news-agents:.*|image: klimdos/moto-news-agents:${{ env.ARTEFACT_VERSION }}|g" \
-          application-data/yaml-local/moto-news/09.cronjob-site-assessor.yaml \
-          application-data/yaml-local/moto-news/10.cronjob-user-agent.yaml
-
-        git config user.name "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
-        git add -A
-        git diff --cached --quiet && echo "No changes" && exit 0
-        git commit -m "agents: update image to ${{ env.ARTEFACT_VERSION }}"
-        git push
