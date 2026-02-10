@@ -99,7 +99,7 @@ func (s *Server) handleFetch(c *gin.Context) {
 func (s *Server) handleTranslate(c *gin.Context) {
 	limit := 10
 	if l := c.Query("limit"); l != "" {
-		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 500 {
 			limit = parsed
 		}
 	}
@@ -123,7 +123,7 @@ func (s *Server) handleTranslate(c *gin.Context) {
 func (s *Server) handlePublish(c *gin.Context) {
 	limit := 100
 	if l := c.Query("limit"); l != "" {
-		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 500 {
 			limit = parsed
 		}
 	}
@@ -227,7 +227,7 @@ func (s *Server) handleStats(c *gin.Context) {
 func (s *Server) handleArticles(c *gin.Context) {
 	limit := 20
 	if l := c.Query("limit"); l != "" {
-		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 500 {
 			limit = parsed
 		}
 	}

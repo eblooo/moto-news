@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -128,12 +129,18 @@ func Load(configPath string) (*Config, error) {
 
 	// Resolve relative paths
 	if !filepath.IsAbs(cfg.Database.Path) {
-		cwd, _ := os.Getwd()
+		cwd, err := os.Getwd()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get working directory: %w", err)
+		}
 		cfg.Database.Path = filepath.Join(cwd, cfg.Database.Path)
 	}
 
 	if !filepath.IsAbs(cfg.Hugo.Path) {
-		cwd, _ := os.Getwd()
+		cwd, err := os.Getwd()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get working directory: %w", err)
+		}
 		cfg.Hugo.Path = filepath.Join(cwd, cfg.Hugo.Path)
 	}
 

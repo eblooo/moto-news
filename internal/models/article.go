@@ -31,7 +31,11 @@ func (a *Article) TagsJSON() string {
 	if len(a.Tags) == 0 {
 		return "[]"
 	}
-	b, _ := json.Marshal(a.Tags)
+	b, err := json.Marshal(a.Tags)
+	if err != nil {
+		// Fallback to empty array on marshal failure
+		return "[]"
+	}
 	return string(b)
 }
 
@@ -41,7 +45,10 @@ func (a *Article) ParseTags(jsonStr string) {
 		a.Tags = []string{}
 		return
 	}
-	json.Unmarshal([]byte(jsonStr), &a.Tags)
+	if err := json.Unmarshal([]byte(jsonStr), &a.Tags); err != nil {
+		// On parse failure, reset to empty to avoid partial state
+		a.Tags = []string{}
+	}
 }
 
 // NullTimeToPtr converts sql.NullTime to *time.Time

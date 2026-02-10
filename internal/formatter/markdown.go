@@ -15,8 +15,13 @@ func NewMarkdownFormatter() *MarkdownFormatter {
 	return &MarkdownFormatter{}
 }
 
-// Format converts an article to Hugo-compatible markdown
+// Format converts an article to Hugo-compatible markdown.
+// Panics if article is nil — callers must validate.
 func (f *MarkdownFormatter) Format(article *models.Article) string {
+	if article == nil {
+		return ""
+	}
+
 	var sb strings.Builder
 
 	// Title
@@ -24,40 +29,38 @@ func (f *MarkdownFormatter) Format(article *models.Article) string {
 	if title == "" {
 		title = article.Title
 	}
-	// Escape quotes in title for YAML
-	escapedTitle := strings.ReplaceAll(title, `"`, `\"`)
 
 	// Frontmatter
 	sb.WriteString("---\n")
-	sb.WriteString(fmt.Sprintf("title: \"%s\"\n", escapedTitle))
+	sb.WriteString(fmt.Sprintf("title: %s\n", yamlQuote(title)))
 	sb.WriteString(fmt.Sprintf("date: %s\n", article.PublishedAt.Format("2006-01-02T15:04:05")))
 
 	// Categories
 	sb.WriteString("categories:\n")
 	sb.WriteString("  - Новости\n")
 	if article.Category != "" {
-		sb.WriteString(fmt.Sprintf("  - %s\n", f.translateCategory(article.Category)))
+		sb.WriteString(fmt.Sprintf("  - %s\n", yamlQuote(f.translateCategory(article.Category))))
 	}
 
 	// Tags
 	if len(article.Tags) > 0 {
 		sb.WriteString("tags:\n")
 		for _, tag := range article.Tags[:min(5, len(article.Tags))] {
-			sb.WriteString(fmt.Sprintf("  - %s\n", tag))
+			sb.WriteString(fmt.Sprintf("  - %s\n", yamlQuote(tag)))
 		}
 	}
 
 	// Source reference
-	sb.WriteString(fmt.Sprintf("source: %s\n", article.SourceURL))
+	sb.WriteString(fmt.Sprintf("source: %s\n", yamlQuote(article.SourceURL)))
 	if article.Author != "" {
-		sb.WriteString(fmt.Sprintf("author: %s\n", article.Author))
+		sb.WriteString(fmt.Sprintf("author: %s\n", yamlQuote(article.Author)))
 	}
 
 	// Cover image
 	if article.ImageURL != "" {
 		sb.WriteString("cover:\n")
-		sb.WriteString(fmt.Sprintf("  image: \"%s\"\n", article.ImageURL))
-		sb.WriteString(fmt.Sprintf("  alt: \"%s\"\n", escapedTitle))
+		sb.WriteString(fmt.Sprintf("  image: %s\n", yamlQuote(article.ImageURL)))
+		sb.WriteString(fmt.Sprintf("  alt: %s\n", yamlQuote(title)))
 		sb.WriteString("  hidden: false\n")
 	}
 
@@ -96,6 +99,10 @@ func (f *MarkdownFormatter) formatContent(content string) string {
 
 // GetFilePath returns the file path for an article
 func (f *MarkdownFormatter) GetFilePath(article *models.Article, baseDir string) string {
+	if article == nil {
+		return filepath.Join(baseDir, "posts", "unknown.md")
+	}
+
 	year := article.PublishedAt.Format("2006")
 	month := article.PublishedAt.Format("01")
 
@@ -162,7 +169,11 @@ func (f *MarkdownFormatter) GenerateIndex(articles []*models.Article, title stri
 	}
 
 	for _, month := range months {
-		t, _ := time.Parse("2006-01", month)
+		t, err := time.Parse("2006-01", month)
+		if err != nil {
+			// Skip months that fail to parse instead of showing zero time
+			continue
+		}
 		sb.WriteString(fmt.Sprintf("## %s\n\n", t.Format("January 2006")))
 
 		for _, a := range byMonth[month] {
@@ -177,6 +188,19 @@ func (f *MarkdownFormatter) GenerateIndex(articles []*models.Article, title stri
 	}
 
 	return sb.String()
+}
+
+// yamlQuote wraps a string in double quotes if it contains YAML-special
+// characters (colon, hash, brackets, quotes, newlines, etc.). Always quotes
+// to be safe for frontmatter values.
+func yamlQuote(s string) string {
+	// Escape backslashes first, then double quotes
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	// Replace newlines with spaces to prevent YAML multiline issues
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", "")
+	return `"` + s + `"`
 }
 
 func min(a, b int) int {

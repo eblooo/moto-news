@@ -125,7 +125,11 @@ func (t *OllamaTranslator) chat(ctx context.Context, systemPrompt, userContent s
 		return "", fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	return strings.TrimSpace(result.Message.Content), nil
+	content := strings.TrimSpace(result.Message.Content)
+	if content == "" && strings.TrimSpace(userContent) != "" {
+		return "", fmt.Errorf("ollama returned empty translation for non-empty input")
+	}
+	return content, nil
 }
 
 // CheckConnection verifies Ollama is running and the model is available
@@ -142,8 +146,11 @@ func (t *OllamaTranslator) CheckConnection(ctx context.Context) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("ollama returned status %d", resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("ollama returned status %d: %s", resp.StatusCode, string(body))
 	}
+	// Drain remaining body for connection reuse
+	io.Copy(io.Discard, resp.Body)
 
 	return nil
 }

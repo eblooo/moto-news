@@ -216,7 +216,9 @@ func (s *Service) Translate(limit int) (*TranslateResult, error) {
 			} else {
 				for _, a := range translatedArticles {
 					a.PublishedToHugo = true
-					s.store.UpdateArticle(a)
+					if err := s.store.UpdateArticle(a); err != nil {
+						fmt.Printf("  ✗ Error updating article status (id=%d): %v\n", a.ID, err)
+					}
 				}
 				fmt.Printf("  ✓ Published %d articles to GitHub\n", len(translatedArticles))
 			}
@@ -226,13 +228,15 @@ func (s *Service) Translate(limit int) (*TranslateResult, error) {
 			pub := publisher.NewHugoPublisher(&s.cfg.Hugo)
 			published := 0
 			for _, article := range translatedArticles {
-				if err := pub.Publish(article); err != nil {
-					fmt.Printf("  ✗ Error publishing: %v\n", err)
-				} else {
-					article.PublishedToHugo = true
-					s.store.UpdateArticle(article)
-					published++
+			if err := pub.Publish(article); err != nil {
+				fmt.Printf("  ✗ Error publishing: %v\n", err)
+			} else {
+				article.PublishedToHugo = true
+				if err := s.store.UpdateArticle(article); err != nil {
+					fmt.Printf("  ✗ Error updating article status (id=%d): %v\n", article.ID, err)
 				}
+				published++
+			}
 			}
 			if s.cfg.Hugo.AutoCommit && published > 0 {
 				if err := pub.GitCommit(fmt.Sprintf("Add %d new articles", published)); err != nil {
@@ -273,7 +277,11 @@ func (s *Service) Publish(limit int) (*PublishResult, error) {
 		}
 		for _, a := range articles {
 			a.PublishedToHugo = true
-			s.store.UpdateArticle(a)
+			if err := s.store.UpdateArticle(a); err != nil {
+				fmt.Printf("  ✗ Error updating article status (id=%d): %v\n", a.ID, err)
+				result.Errors++
+				continue
+			}
 			result.Published++
 		}
 		fmt.Printf("  ✓ Published %d articles to GitHub\n", result.Published)

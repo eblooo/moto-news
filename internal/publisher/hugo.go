@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"moto-news/internal/config"
 	"moto-news/internal/formatter"
@@ -25,6 +26,14 @@ func NewHugoPublisher(cfg *config.HugoConfig) *HugoPublisher {
 
 // Publish publishes an article to the Hugo site
 func (p *HugoPublisher) Publish(article *models.Article) error {
+	if article == nil {
+		return fmt.Errorf("article cannot be nil")
+	}
+
+	if err := p.validateConfig(); err != nil {
+		return err
+	}
+
 	// Get the full content path
 	contentPath := filepath.Join(p.config.Path, p.config.ContentDir)
 
@@ -64,27 +73,25 @@ func (p *HugoPublisher) PublishMultiple(articles []*models.Article) error {
 	return nil
 }
 
-// GitCommit commits changes to git
+// GitCommit commits changes to git.
+// Uses cmd.Dir instead of os.Chdir to avoid race conditions.
 func (p *HugoPublisher) GitCommit(message string) error {
-	// Change to blog directory
-	cwd, err := os.Getwd()
-	if err != nil {
+	if err := p.validateConfig(); err != nil {
 		return err
 	}
 
-	if err := os.Chdir(p.config.Path); err != nil {
-		return fmt.Errorf("failed to change to blog directory: %w", err)
-	}
-	defer os.Chdir(cwd)
+	dir := p.config.Path
 
 	// Git add
 	addCmd := exec.Command("git", "add", "-A")
+	addCmd.Dir = dir
 	if output, err := addCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git add failed: %s: %w", string(output), err)
 	}
 
 	// Check if there are changes to commit
 	statusCmd := exec.Command("git", "status", "--porcelain")
+	statusCmd.Dir = dir
 	statusOutput, err := statusCmd.Output()
 	if err != nil {
 		return fmt.Errorf("git status failed: %w", err)
@@ -97,6 +104,7 @@ func (p *HugoPublisher) GitCommit(message string) error {
 
 	// Git commit
 	commitCmd := exec.Command("git", "commit", "-m", message)
+	commitCmd.Dir = dir
 	if output, err := commitCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git commit failed: %s: %w", string(output), err)
 	}
@@ -107,6 +115,10 @@ func (p *HugoPublisher) GitCommit(message string) error {
 
 // GitPull pulls latest changes from remote
 func (p *HugoPublisher) GitPull() error {
+	if err := p.validateConfig(); err != nil {
+		return err
+	}
+
 	gitDir := filepath.Join(p.config.Path, ".git")
 
 	// Check if .git directory exists (it's a git repo)
@@ -116,11 +128,10 @@ func (p *HugoPublisher) GitPull() error {
 			return fmt.Errorf("git_repo not configured")
 		}
 
-		// Remove existing directory if it exists
+		// Remove existing directory if it exists — with safety check
 		if _, err := os.Stat(p.config.Path); err == nil {
-			fmt.Printf("Removing existing non-git directory %s...\n", p.config.Path)
-			if err := os.RemoveAll(p.config.Path); err != nil {
-				return fmt.Errorf("failed to remove directory: %w", err)
+			if err := p.safeRemoveAll(); err != nil {
+				return err
 			}
 		}
 
@@ -133,18 +144,15 @@ func (p *HugoPublisher) GitPull() error {
 		return nil
 	}
 
-	cwd, err := os.Getwd()
-	if err != nil {
-		return err
+	if p.config.GitRemote == "" || p.config.GitBranch == "" {
+		return fmt.Errorf("git_remote and git_branch must be configured for pull")
 	}
 
-	if err := os.Chdir(p.config.Path); err != nil {
-		return fmt.Errorf("failed to change to blog directory: %w", err)
-	}
-	defer os.Chdir(cwd)
+	dir := p.config.Path
 
 	fmt.Println("Pulling latest changes...")
 	pullCmd := exec.Command("git", "pull", p.config.GitRemote, p.config.GitBranch)
+	pullCmd.Dir = dir
 	if output, err := pullCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git pull failed: %s: %w", string(output), err)
 	}
@@ -155,17 +163,18 @@ func (p *HugoPublisher) GitPull() error {
 
 // GitPush pushes changes to remote
 func (p *HugoPublisher) GitPush() error {
-	cwd, err := os.Getwd()
-	if err != nil {
+	if err := p.validateConfig(); err != nil {
 		return err
 	}
 
-	if err := os.Chdir(p.config.Path); err != nil {
-		return fmt.Errorf("failed to change to blog directory: %w", err)
+	if p.config.GitRemote == "" || p.config.GitBranch == "" {
+		return fmt.Errorf("git_remote and git_branch must be configured for push")
 	}
-	defer os.Chdir(cwd)
+
+	dir := p.config.Path
 
 	pushCmd := exec.Command("git", "push", p.config.GitRemote, p.config.GitBranch)
+	pushCmd.Dir = dir
 	if output, err := pushCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git push failed: %s: %w", string(output), err)
 	}
@@ -177,4 +186,37 @@ func (p *HugoPublisher) GitPush() error {
 // GetContentPath returns the full path to the content directory
 func (p *HugoPublisher) GetContentPath() string {
 	return filepath.Join(p.config.Path, p.config.ContentDir)
+}
+
+// validateConfig checks that the Hugo config has a valid path.
+func (p *HugoPublisher) validateConfig() error {
+	if p.config.Path == "" {
+		return fmt.Errorf("hugo.path is not configured")
+	}
+	return nil
+}
+
+// safeRemoveAll removes p.config.Path only if it is not the current directory
+// or a parent of it. Prevents accidental deletion of the project root.
+func (p *HugoPublisher) safeRemoveAll() error {
+	absPath, err := filepath.Abs(p.config.Path)
+	if err != nil {
+		return fmt.Errorf("failed to resolve blog path: %w", err)
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get working directory: %w", err)
+	}
+
+	// Refuse to remove if the target is or contains the current working dir
+	if absPath == filepath.Clean(cwd) || strings.HasPrefix(cwd, absPath+string(filepath.Separator)) {
+		return fmt.Errorf("refusing to remove %s: it contains or equals the current directory %s", absPath, cwd)
+	}
+
+	fmt.Printf("Removing existing non-git directory %s...\n", p.config.Path)
+	if err := os.RemoveAll(p.config.Path); err != nil {
+		return fmt.Errorf("failed to remove directory: %w", err)
+	}
+	return nil
 }

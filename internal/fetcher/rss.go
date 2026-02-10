@@ -2,6 +2,7 @@ package fetcher
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/gosimple/slug"
@@ -21,6 +22,10 @@ func NewRSSFetcher() *RSSFetcher {
 
 // FetchFeed fetches articles from an RSS feed URL
 func (f *RSSFetcher) FetchFeed(feedURL string, sourceSite string) ([]*models.Article, error) {
+	if strings.TrimSpace(feedURL) == "" {
+		return nil, fmt.Errorf("feed URL is empty")
+	}
+
 	feed, err := f.parser.ParseURL(feedURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse feed %s: %w", feedURL, err)
@@ -28,6 +33,9 @@ func (f *RSSFetcher) FetchFeed(feedURL string, sourceSite string) ([]*models.Art
 
 	var articles []*models.Article
 	for _, item := range feed.Items {
+		if item == nil {
+			continue
+		}
 		article := f.itemToArticle(item, sourceSite)
 		articles = append(articles, article)
 	}
@@ -37,11 +45,11 @@ func (f *RSSFetcher) FetchFeed(feedURL string, sourceSite string) ([]*models.Art
 
 func (f *RSSFetcher) itemToArticle(item *gofeed.Item, sourceSite string) *models.Article {
 	article := &models.Article{
-		SourceURL:   item.Link,
-		SourceSite:  sourceSite,
-		Title:       item.Title,
+		SourceURL:  item.Link,
+		SourceSite: sourceSite,
+		Title:      item.Title,
 		Description: item.Description,
-		FetchedAt:   time.Now(),
+		FetchedAt:  time.Now(),
 	}
 
 	// Parse published date
@@ -54,7 +62,7 @@ func (f *RSSFetcher) itemToArticle(item *gofeed.Item, sourceSite string) *models
 	}
 
 	// Extract author
-	if len(item.Authors) > 0 {
+	if len(item.Authors) > 0 && item.Authors[0] != nil {
 		article.Author = item.Authors[0].Name
 	} else if item.Author != nil {
 		article.Author = item.Author.Name
@@ -71,6 +79,9 @@ func (f *RSSFetcher) itemToArticle(item *gofeed.Item, sourceSite string) *models
 		article.ImageURL = item.Image.URL
 	} else if len(item.Enclosures) > 0 {
 		for _, enc := range item.Enclosures {
+			if enc == nil {
+				continue
+			}
 			if enc.Type == "image/jpeg" || enc.Type == "image/png" || enc.Type == "image/webp" {
 				article.ImageURL = enc.URL
 				break
@@ -87,18 +98,28 @@ func (f *RSSFetcher) itemToArticle(item *gofeed.Item, sourceSite string) *models
 	return article
 }
 
-// FetchMultipleFeeds fetches articles from multiple feed URLs
+// FetchMultipleFeeds fetches articles from multiple feed URLs.
+// Returns an error only when ALL feeds fail. Partial failures are logged.
 func (f *RSSFetcher) FetchMultipleFeeds(feedURLs []string, sourceSite string) ([]*models.Article, error) {
 	var allArticles []*models.Article
+	var lastErr error
+	failCount := 0
 
 	for _, feedURL := range feedURLs {
 		articles, err := f.FetchFeed(feedURL, sourceSite)
 		if err != nil {
 			// Log error but continue with other feeds
 			fmt.Printf("Warning: failed to fetch %s: %v\n", feedURL, err)
+			lastErr = err
+			failCount++
 			continue
 		}
 		allArticles = append(allArticles, articles...)
+	}
+
+	// Return an error when every single feed failed
+	if failCount == len(feedURLs) && failCount > 0 {
+		return nil, fmt.Errorf("all %d feeds failed, last error: %w", failCount, lastErr)
 	}
 
 	return allArticles, nil

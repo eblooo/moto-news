@@ -39,6 +39,10 @@ type jsonLDArticle struct {
 
 // ScrapeArticle fetches the full content of an article from its URL
 func (s *ArticleScraper) ScrapeArticle(article *models.Article) error {
+	if article == nil || article.SourceURL == "" {
+		return fmt.Errorf("article has no source URL")
+	}
+
 	req, err := http.NewRequest("GET", article.SourceURL, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request for %s: %w", article.SourceURL, err)
@@ -55,6 +59,8 @@ func (s *ArticleScraper) ScrapeArticle(article *models.Article) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		// Drain body to allow connection reuse
+		io.Copy(io.Discard, resp.Body)
 		return fmt.Errorf("unexpected status %d for %s", resp.StatusCode, article.SourceURL)
 	}
 

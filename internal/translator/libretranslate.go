@@ -83,7 +83,11 @@ func (t *LibreTranslateTranslator) translate(ctx context.Context, text string) (
 		return "", fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	return strings.TrimSpace(result.TranslatedText), nil
+	translated := strings.TrimSpace(result.TranslatedText)
+	if translated == "" && strings.TrimSpace(text) != "" {
+		return "", fmt.Errorf("libretranslate returned empty translation for non-empty input")
+	}
+	return translated, nil
 }
 
 // CheckConnection verifies LibreTranslate is running
@@ -100,8 +104,11 @@ func (t *LibreTranslateTranslator) CheckConnection(ctx context.Context) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("libretranslate returned status %d", resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("libretranslate returned status %d: %s", resp.StatusCode, string(body))
 	}
+	// Drain remaining body for connection reuse
+	io.Copy(io.Discard, resp.Body)
 
 	return nil
 }

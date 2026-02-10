@@ -203,7 +203,8 @@ func (s *SQLiteStorage) GetRecentArticles(limit int) ([]*models.Article, error) 
 	return s.scanArticles(query, limit)
 }
 
-// GetArticlesWithEmptyContent returns articles where content is empty or too short (scraping failed/incomplete)
+// GetArticlesWithEmptyContent returns articles where content is empty or too short (scraping failed/incomplete).
+// Limited to 500 rows to avoid unbounded memory usage.
 func (s *SQLiteStorage) GetArticlesWithEmptyContent() ([]*models.Article, error) {
 	query := `
 	SELECT id, source_url, source_site, title, title_ru, description, content, content_ru,
@@ -212,6 +213,7 @@ func (s *SQLiteStorage) GetArticlesWithEmptyContent() ([]*models.Article, error)
 	FROM articles 
 	WHERE content = '' OR content IS NULL OR LENGTH(content) < 1000 OR category = ''
 	ORDER BY fetched_at DESC
+	LIMIT 500
 	`
 	return s.scanArticles(query)
 }

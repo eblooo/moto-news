@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -59,6 +60,10 @@ func (p *GitHubPublisher) IsAvailable() bool {
 
 // Publish formats an article and pushes it to GitHub via API
 func (p *GitHubPublisher) Publish(article *models.Article) error {
+	if article == nil {
+		return fmt.Errorf("article cannot be nil")
+	}
+
 	if !p.IsAvailable() {
 		return fmt.Errorf("GitHub publisher not configured (GITHUB_TOKEN not set)")
 	}
@@ -67,7 +72,8 @@ func (p *GitHubPublisher) Publish(article *models.Article) error {
 	content := p.formatter.Format(article)
 
 	// Build the file path (e.g. content/posts/2026/02/slug.md)
-	filePath := p.formatter.GetFilePath(article, p.config.ContentDir)
+	// Use forward slashes for GitHub regardless of OS
+	filePath := toForwardSlash(p.formatter.GetFilePath(article, p.config.ContentDir))
 
 	// Push to GitHub
 	message := fmt.Sprintf("Add article: %s", article.TitleRU)
@@ -97,8 +103,11 @@ func (p *GitHubPublisher) PublishMultiple(articles []*models.Article) error {
 	var files []treeFile
 	fmt.Println("\nArticles to upload:")
 	for i, article := range articles {
+		if article == nil {
+			continue
+		}
 		content := p.formatter.Format(article)
-		filePath := p.formatter.GetFilePath(article, p.config.ContentDir)
+		filePath := toForwardSlash(p.formatter.GetFilePath(article, p.config.ContentDir))
 		files = append(files, treeFile{path: filePath, content: content})
 		title := article.TitleRU
 		if title == "" {
@@ -221,11 +230,12 @@ func (p *GitHubPublisher) doRequest(method, url string, body interface{}) ([]byt
 
 // putFile creates or updates a single file via Contents API
 func (p *GitHubPublisher) putFile(filePath, content, message string) error {
-	url := p.apiURL("/contents/" + filePath)
+	encodedPath := encodePathSegments(filePath)
+	apiURL := p.apiURL("/contents/" + encodedPath)
 
 	// Check if file exists (to get SHA for update)
 	var existingSHA string
-	data, err := p.doRequest("GET", url+"?ref="+p.branch, nil)
+	data, err := p.doRequest("GET", apiURL+"?ref="+url.QueryEscape(p.branch), nil)
 	if err == nil {
 		var existing contentsResponse
 		if json.Unmarshal(data, &existing) == nil {
@@ -242,7 +252,7 @@ func (p *GitHubPublisher) putFile(filePath, content, message string) error {
 		req.SHA = existingSHA
 	}
 
-	_, err = p.doRequest("PUT", url, req)
+	_, err = p.doRequest("PUT", apiURL, req)
 	return err
 }
 
@@ -318,6 +328,21 @@ func (p *GitHubPublisher) commitMultipleFiles(files []treeFile, message string) 
 
 	fmt.Printf("Committed %d files to GitHub (%s/%s@%s)\n", len(files), p.owner, p.repo, p.branch)
 	return nil
+}
+
+// toForwardSlash converts OS-specific path separators to forward slashes for GitHub API.
+func toForwardSlash(p string) string {
+	return strings.ReplaceAll(p, "\\", "/")
+}
+
+// encodePathSegments URL-encodes each segment of a file path for the GitHub API,
+// preserving forward slashes as path separators.
+func encodePathSegments(filePath string) string {
+	parts := strings.Split(filePath, "/")
+	for i, p := range parts {
+		parts[i] = url.PathEscape(p)
+	}
+	return strings.Join(parts, "/")
 }
 
 // parseGitHubRepo extracts owner and repo from a GitHub URL
