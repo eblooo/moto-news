@@ -7,7 +7,8 @@ Usage:
     python site_assessor.py --post-discussion --config agents.yaml
 
 Requirements:
-    - Ollama running with qwen2.5-coder:7b or llama3.2:3b
+    - OPENROUTER_API_KEY environment variable (default provider)
+      OR Ollama running locally (set LLM_PROVIDER=ollama)
     - pip install -r requirements.txt
     - GITHUB_TOKEN env var (only when --post-discussion is used)
 """
@@ -21,24 +22,17 @@ import time
 from datetime import datetime
 from typing import Optional
 
-from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
-from config import load_config
+from config import load_config, create_llm
 from tools.site_reader import fetch_page
 from tools.github_discussions import post_discussion
 
 
-def create_assessment_chain(model: str, host: str, temperature: float = 0.35):
+def create_assessment_chain(config):
     """Create LangChain chain for site assessment."""
-    llm = ChatOllama(
-        model=model,
-        base_url=host,
-        temperature=temperature,
-        num_ctx=8192,
-        num_predict=2048,
-    )
+    llm = create_llm(config, role="coder")
 
     prompt = ChatPromptTemplate.from_messages([
         ("system", """Ты эксперт по Hugo, веб-разработке и UX.
@@ -94,8 +88,8 @@ def run_assessment(url: str, config_path: Optional[str] = None) -> str:
     cfg = load_config(config_path)
 
     print(f"[{datetime.now().isoformat()}] Starting site assessment for {url}")
-    print(f"  Model: {cfg.ollama.coder_model}")
-    print(f"  Ollama: {cfg.ollama.host}")
+    print(f"  Provider: {cfg.llm.provider}")
+    print(f"  Model: {cfg.llm.coder_model}")
     print()
 
     # Fetch site data (with retries for transient DNS failures in K8s)
@@ -119,12 +113,8 @@ def run_assessment(url: str, config_path: Optional[str] = None) -> str:
     print()
 
     # Run LLM analysis with retries
-    print("  Running LLM analysis (this may take a while on CPU)...")
-    chain = create_assessment_chain(
-        model=cfg.ollama.coder_model,
-        host=cfg.ollama.host,
-        temperature=cfg.ollama.temperature,
-    )
+    print("  Running LLM analysis...")
+    chain = create_assessment_chain(cfg)
 
     invoke_args = {
         "url": url,

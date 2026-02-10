@@ -16,7 +16,8 @@ Usage:
     python user_agent.py [--config agents.yaml] [--once] [--dry-run]
 
 Requirements:
-    - Ollama running with llama3.2:3b
+    - OPENROUTER_API_KEY environment variable (default provider)
+      OR Ollama running locally (set LLM_PROVIDER=ollama)
     - GITHUB_TOKEN environment variable set
     - pip install -r requirements.txt
 """
@@ -32,11 +33,10 @@ import time
 from datetime import datetime
 
 import structlog
-from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
-from config import load_config
+from config import load_config, create_llm
 from tools.site_reader import build_site_report, fetch_page, fetch_source_context
 from tools.github_discussions import (
     _graphql_query,
@@ -308,10 +308,6 @@ def fetch_site_data(url: str) -> dict:
     if not source_text:
         source_text = "Исходный код недоступен (нет GITHUB_TOKEN или ошибка API)\n"
 
-    # Cap source context to ~3000 chars to stay within LLM context window
-    if len(source_text) > 3000:
-        source_text = source_text[:3000] + "\n... (обрезано для экономии контекста)"
-
     log.info("pipeline.fetch_site.done",
              title=hp.title[:60],
              word_count=hp.word_count,
@@ -486,17 +482,12 @@ def run_llm_analysis(config, site_data: dict, topic: dict) -> dict:
     Returns dict with title and body.
     """
     log.info("pipeline.llm_analysis",
-             model=config.ollama.user_model,
-             host=config.ollama.host,
+             provider=config.llm.provider,
+             model=config.llm.user_model,
              topic_id=topic["id"],
              topic_name=topic["name"])
 
-    llm = ChatOllama(
-        model=config.ollama.user_model,
-        base_url=config.ollama.host,
-        temperature=config.ollama.temperature,
-        num_ctx=config.ollama.num_ctx,
-    )
+    llm = create_llm(config, role="user")
 
     chain = ANALYSIS_PROMPT | llm | StrOutputParser()
 
@@ -827,8 +818,8 @@ def run_once(config, dry_run: bool = False):
     start_time = time.monotonic()
 
     log.info("pipeline.start",
-             model=config.ollama.user_model,
-             host=config.ollama.host,
+             provider=config.llm.provider,
+             model=config.llm.user_model,
              site=config.site.url,
              github_repo=config.github.repo,
              github_token_set=bool(config.github.token),
@@ -997,8 +988,8 @@ def main():
              site_url=config.site.url,
              github_repo=config.github.repo,
              discussions_category=config.github.discussions_category,
-             ollama_host=config.ollama.host,
-             ollama_model=config.ollama.user_model,
+             llm_provider=config.llm.provider,
+             llm_model=config.llm.user_model,
              github_token_set=bool(config.github.token))
 
     if not config.github.token and not args.dry_run:
