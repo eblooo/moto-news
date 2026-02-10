@@ -5,8 +5,9 @@
 llm:
   provider: openrouter                                    # "openrouter" or "ollama"
   # openrouter_api_key: set via OPENROUTER_API_KEY env var
-  user_model: "meta-llama/llama-3.3-70b-instruct:free"   # 131K context, GPT-4 level
+  user_model: "meta-llama/llama-3.3-70b-instruct:free"   # 128K context, strong instruction following
   coder_model: "meta-llama/llama-3.3-70b-instruct:free"
+  admin_model: "meta-llama/llama-3.3-70b-instruct:free"  # Code generation for PRs
 
 # Ollama config — still used by admin_agent (and as fallback when LLM_PROVIDER=ollama)
 ollama:

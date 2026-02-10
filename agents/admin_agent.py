@@ -1,21 +1,22 @@
 """
-Stage 3: Admin Agent — LangGraph agent with human approval.
+Admin Agent — reads GitHub Discussions labelled "Implement" and creates PRs.
 
-Workflow (LangGraph state machine):
-1. assess_site   → snapshot of site + recent commits
-2. read_discussions → new comments in "Ideas" category
-3. analyze        → LLM decides what to implement
-4. generate_changes → creates diff / new .md / edits hugo.toml
-5. human_approval  → waits for approval (file-based or API)
-6. commit          → git add/commit/push (only after approval)
+Pipeline:
+1. Fetch discussions with "Implement" label from the blog repo
+2. Filter out already-processed discussions (bot comment present)
+3. For each unprocessed discussion:
+   a. Fetch relevant source code from target repo
+   b. Ask LLM to generate code changes (JSON)
+   c. Create branch, commit changes, open PR
+   d. Comment on discussion with PR link
 
 Usage:
-    python admin_agent.py [--config agents.yaml] [--auto-approve]
+    python admin_agent.py --config agents.yaml [--once] [--dry-run]
 
 Requirements:
-    - Ollama running with deepseek-r1:8b or qwen2.5-coder:7b
-    - GITHUB_TOKEN environment variable
-    - Local clone of the blog repository
+    - OPENROUTER_API_KEY environment variable
+    - GITHUB_TOKEN environment variable (needs repo + discussions write)
+    - pip install -r requirements.txt
 """
 
 from __future__ import annotations
@@ -23,457 +24,566 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
+import re
 import sys
 import time
 from datetime import datetime
-from pathlib import Path
-from typing import Annotated, Dict, List, Literal
+from typing import Optional
 
 import structlog
-from langchain_ollama import ChatOllama
-from langchain_core.messages import HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from langgraph.graph import StateGraph, END
-from langgraph.graph.message import add_messages
-from typing_extensions import TypedDict
 
-from config import load_config
-from tools.site_reader import fetch_page
-from tools.github_discussions import _graphql_query
-
+from config import load_config, create_llm
+from tools.github_discussions import _graphql_query, _get_headers
+from tools.github_pr import apply_changes_as_pr, get_file_content
 
 log = structlog.get_logger()
 
-
-# ===== State Definition =====
-
-class AdminState(TypedDict):
-    """State for the admin agent workflow."""
-    site_snapshot: str
-    discussions: List[Dict]
-    analysis: str
-    proposed_changes: List[Dict]  # [{file: str, action: str, content: str}]
-    approval_status: str  # "pending", "approved", "rejected"
-    commit_result: str
-    errors: List[str]
-    messages: Annotated[list, add_messages]
+BOT_MARKER = "<!-- admin-agent-pr -->"
+MAX_RETRIES = 2
+RETRY_DELAY_SECONDS = 20
 
 
-# ===== Node Functions =====
+# ---------------------------------------------------------------------------
+# Step 1: Fetch discussions with "Implement" label
+# ---------------------------------------------------------------------------
 
-def assess_site(state: AdminState) -> dict:
-    """Node 1: Get site snapshot and recent state."""
-    log.info("admin.assess_site")
-
-    cfg = state.get("_config")
-    url = cfg.site.url if cfg else "https://blog.alimov.top"
-
-    try:
-        page = fetch_page(url)
-        snapshot = f"""Site: {page.url}
-Title: {page.title}
-Word Count: {page.word_count}
-Headings: {len(page.headings)}
-Links: {len(page.links)}
-
-Content preview:
-{page.content[:2000]}
-
-Headings:
-{chr(10).join(page.headings[:15])}
-"""
-        log.info("admin.assess_site.done", word_count=page.word_count)
-        return {"site_snapshot": snapshot}
-    except Exception as e:
-        log.error("admin.assess_site.error", error=str(e))
-        return {
-            "site_snapshot": f"Error: {e}",
-            "errors": state.get("errors", []) + [f"assess_site: {e}"],
-        }
-
-
-def read_discussions(state: AdminState) -> dict:
-    """Node 2: Read new discussions from GitHub."""
-    log.info("admin.read_discussions")
-
-    cfg = state.get("_config")
-    repo = cfg.github.repo if cfg else "KlimDos/my-blog"
+def fetch_implement_discussions(repo: str) -> list[dict]:
+    """Fetch discussions that have the 'Implement' label."""
+    log.info("admin.fetch_discussions", repo=repo)
     owner, name = repo.split("/")
 
     query = """
-    query($owner: String!, $name: String!, $limit: Int!) {
+    query($owner: String!, $name: String!) {
       repository(owner: $owner, name: $name) {
-        discussions(first: $limit, orderBy: {field: UPDATED_AT, direction: DESC}) {
+        discussions(first: 20, orderBy: {field: CREATED_AT, direction: DESC}) {
           nodes {
+            id
             number
             title
             body
             author { login }
             createdAt
-            updatedAt
-            comments(first: 10) {
+            category { name }
+            url
+            labels(first: 10) { nodes { name } }
+            comments(first: 30) {
               nodes {
                 body
                 author { login }
-                createdAt
               }
             }
-            category { name }
           }
         }
       }
     }
     """
 
-    try:
-        data = _graphql_query(query, {
-            "owner": owner,
-            "name": name,
-            "limit": 10,
-        })
-        discussions = data["repository"]["discussions"]["nodes"]
-        # Filter to "Ideas"
-        discussions = [
-            d for d in discussions
-            if d["category"]["name"].lower() == "ideas"
-        ]
-        log.info("admin.read_discussions.done", count=len(discussions))
-        return {"discussions": discussions}
-    except Exception as e:
-        log.error("admin.read_discussions.error", error=str(e))
-        return {
-            "discussions": [],
-            "errors": state.get("errors", []) + [f"read_discussions: {e}"],
-        }
+    data = _graphql_query(query, {"owner": owner, "name": name})
+    all_discussions = data["repository"]["discussions"]["nodes"]
+
+    # Filter: must have "Implement" label
+    implement = []
+    for d in all_discussions:
+        labels = [l["name"].lower() for l in d.get("labels", {}).get("nodes", [])]
+        if "implement" in labels:
+            implement.append(d)
+
+    log.info("admin.fetch_discussions.done",
+             total=len(all_discussions), with_implement_label=len(implement))
+    return implement
 
 
-def analyze(state: AdminState) -> dict:
-    """Node 3: LLM analyzes site + discussions and decides what to implement."""
-    log.info("admin.analyze")
-
-    cfg = state.get("_config")
-    model = cfg.ollama.admin_model if cfg else "deepseek-r1:8b"
-    host = cfg.ollama.host if cfg else "http://localhost:11434"
-
-    llm = ChatOllama(
-        model=model,
-        base_url=host,
-        temperature=0.3,
-        num_ctx=8192,
-        num_predict=2048,
-    )
-
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", """Ты — Admin-агент для блога blog.alimov.top (Hugo PaperMod).
-Ты анализируешь состояние сайта и предложения из GitHub Discussions.
-Ты решаешь, какие изменения стоит внести.
-
-Формат ответа — JSON массив изменений:
-```json
-[
-  {{
-    "file": "путь/к/файлу.md",
-    "action": "create|modify|delete",
-    "description": "Что и зачем менять",
-    "priority": "high|medium|low",
-    "content": "Содержимое файла или изменения (для create/modify)"
-  }}
-]
-```
-
-Если нет необходимых изменений, верни пустой массив: []
-
-ВАЖНО:
-- Предлагай только безопасные изменения (документация, конфигурация Hugo, новые страницы)
-- НЕ предлагай изменения в код Python/Go приложений
-- Каждое изменение должно быть обосновано"""),
-
-        ("human", """=== Состояние сайта ===
-{site_snapshot}
-
-=== Обсуждения из GitHub Discussions ===
-{discussions}
-
-=== Задание ===
-Проанализируй данные и предложи конкретные изменения для улучшения блога.
-Верни JSON массив изменений."""),
-    ])
-
-    chain = prompt | llm | StrOutputParser()
-
-    discussions_text = ""
-    for d in state.get("discussions", []):
-        discussions_text += f"\n### #{d.get('number', '?')}: {d.get('title', 'N/A')}\n"
-        discussions_text += f"Автор: {d.get('author', {}).get('login', 'unknown')}\n"
-        discussions_text += f"Тело: {d.get('body', '')[:300]}\n"
-        for c in d.get("comments", {}).get("nodes", []):
-            discussions_text += f"  Комментарий от {c.get('author', {}).get('login', '?')}: {c.get('body', '')[:200]}\n"
-
-    try:
-        result = chain.invoke({
-            "site_snapshot": state.get("site_snapshot", "N/A"),
-            "discussions": discussions_text or "Нет обсуждений",
-        })
-
-        # Try to parse JSON from response
-        # LLM might wrap it in ```json ... ```
-        json_str = result
-        if "```json" in json_str:
-            json_str = json_str.split("```json")[1].split("```")[0]
-        elif "```" in json_str:
-            json_str = json_str.split("```")[1].split("```")[0]
-
-        try:
-            proposed_changes = json.loads(json_str.strip())
-            if not isinstance(proposed_changes, list):
-                proposed_changes = []
-        except json.JSONDecodeError:
-            proposed_changes = []
-
-        log.info("admin.analyze.done", changes_count=len(proposed_changes))
-        return {
-            "analysis": result,
-            "proposed_changes": proposed_changes,
-        }
-
-    except Exception as e:
-        log.error("admin.analyze.error", error=str(e))
-        return {
-            "analysis": f"Error: {e}",
-            "proposed_changes": [],
-            "errors": state.get("errors", []) + [f"analyze: {e}"],
-        }
+def is_already_processed(discussion: dict) -> bool:
+    """Check if the bot already commented with a PR link on this discussion."""
+    comments = discussion.get("comments", {}).get("nodes", [])
+    for c in comments:
+        if BOT_MARKER in (c.get("body") or ""):
+            return True
+    return False
 
 
-def human_approval(state: AdminState) -> dict:
-    """Node 5: Wait for human approval (file-based)."""
-    log.info("admin.human_approval")
+# ---------------------------------------------------------------------------
+# Step 2: Fetch source code context for the target repo
+# ---------------------------------------------------------------------------
 
-    changes = state.get("proposed_changes", [])
+def fetch_repo_tree(repo: str, path: str = "", ref: str = "main") -> list[str]:
+    """Recursively list files in a repo directory. Returns list of paths."""
+    import httpx
 
-    if not changes:
-        log.info("admin.human_approval.no_changes")
-        return {"approval_status": "rejected"}
-
-    # Check for auto-approve mode
-    if state.get("_auto_approve"):
-        log.info("admin.human_approval.auto_approved")
-        return {"approval_status": "approved"}
-
-    # Write approval request to file
-    approval_file = Path("/tmp/moto-news-approval.json")
-    approval_data = {
-        "timestamp": datetime.now().isoformat(),
-        "changes": changes,
-        "analysis": state.get("analysis", ""),
-        "status": "pending",
-        "instructions": "Set 'status' to 'approved' or 'rejected' and save the file.",
+    headers = {
+        "Authorization": f"Bearer {os.getenv('GITHUB_TOKEN', '')}",
+        "Accept": "application/vnd.github.v3+json",
     }
 
-    approval_file.write_text(json.dumps(approval_data, ensure_ascii=False, indent=2))
-    log.info("admin.human_approval.waiting", file=str(approval_file))
-    print(f"\n{'='*50}")
-    print(f"APPROVAL REQUIRED")
-    print(f"Review changes in: {approval_file}")
-    print(f"Edit 'status' to 'approved' or 'rejected'")
-    print(f"{'='*50}\n")
-
-    # Poll for approval (check every 30 seconds, timeout after 1 hour)
-    timeout = 3600
-    interval = 30
-    elapsed = 0
-
-    while elapsed < timeout:
-        if approval_file.exists():
-            try:
-                data = json.loads(approval_file.read_text())
-                status = data.get("status", "pending")
-                if status in ("approved", "rejected"):
-                    log.info("admin.human_approval.result", status=status)
-                    return {"approval_status": status}
-            except json.JSONDecodeError:
-                pass
-
-        time.sleep(interval)
-        elapsed += interval
-
-    log.warning("admin.human_approval.timeout")
-    return {"approval_status": "rejected"}
+    r = httpx.get(
+        f"https://api.github.com/repos/{repo}/git/trees/{ref}",
+        headers=headers,
+        params={"recursive": "1"},
+        timeout=30,
+    )
+    r.raise_for_status()
+    tree = r.json().get("tree", [])
+    return [item["path"] for item in tree if item["type"] == "blob"]
 
 
-def commit_changes(state: AdminState) -> dict:
-    """Node 6: Apply changes and commit to git."""
-    log.info("admin.commit_changes")
+def fetch_context_for_discussion(
+    target_repo: str,
+    discussion_title: str,
+    discussion_body: str,
+) -> str:
+    """Build source code context relevant to the discussion suggestion.
 
-    if state.get("approval_status") != "approved":
-        return {"commit_result": "Skipped: not approved"}
+    Fetches:
+    - Repository file tree (structure)
+    - Key config files
+    - Files that might be relevant based on the discussion text
+    """
+    context_parts = []
 
-    cfg = state.get("_config")
-    blog_path = cfg.site.repo_path if cfg else ""
+    # 1. File tree
+    try:
+        tree = fetch_repo_tree(target_repo)
+        # Show truncated tree
+        tree_text = "\n".join(tree[:200])
+        if len(tree) > 200:
+            tree_text += f"\n... and {len(tree) - 200} more files"
+        context_parts.append(f"=== Repository file tree ({target_repo}) ===\n{tree_text}")
+        log.info("admin.context.tree", repo=target_repo, files=len(tree))
+    except Exception as e:
+        log.warning("admin.context.tree_error", error=str(e))
+        context_parts.append(f"=== File tree unavailable: {e} ===")
 
-    if not blog_path or not Path(blog_path).exists():
-        return {
-            "commit_result": "Error: blog repo path not configured",
-            "errors": state.get("errors", []) + ["commit: blog_path not found"],
-        }
+    # 2. Key config files (try common ones)
+    key_files = [
+        "config.yaml", "config.toml", "config.yml",
+        "hugo.yaml", "hugo.toml",
+        "go.mod",
+        "agents/agents.yaml",
+        "agents/requirements.txt",
+        "Dockerfile",
+        "agents/Dockerfile",
+    ]
 
-    changes = state.get("proposed_changes", [])
-    applied = 0
-
-    for change in changes:
-        file_path = Path(blog_path) / change.get("file", "")
-        action = change.get("action", "")
-        content = change.get("content", "")
-
+    for fpath in key_files:
         try:
-            if action == "create":
-                file_path.parent.mkdir(parents=True, exist_ok=True)
-                file_path.write_text(content, encoding="utf-8")
-                applied += 1
-                log.info("admin.commit.created", file=str(file_path))
+            content, _ = get_file_content(target_repo, fpath)
+            context_parts.append(f"=== {fpath} ===\n{content[:3000]}")
+            log.info("admin.context.file_ok", path=fpath)
+        except Exception:
+            pass  # File doesn't exist, skip
 
-            elif action == "modify" and file_path.exists():
-                file_path.write_text(content, encoding="utf-8")
-                applied += 1
-                log.info("admin.commit.modified", file=str(file_path))
+    # 3. Try to find relevant files based on discussion keywords
+    discussion_text = f"{discussion_title} {discussion_body}".lower()
 
-            elif action == "delete" and file_path.exists():
-                file_path.unlink()
-                applied += 1
-                log.info("admin.commit.deleted", file=str(file_path))
+    # Map common keywords to relevant paths
+    keyword_paths = {
+        "seo": ["layouts/partials/head.html", "layouts/partials/seo.html",
+                 "layouts/_default/baseof.html"],
+        "robot": ["static/robots.txt", "layouts/robots.txt"],
+        "sitemap": ["layouts/sitemap.xml", "config.yaml"],
+        "навигац": ["layouts/partials/header.html", "layouts/partials/nav.html"],
+        "rss": ["layouts/_default/rss.xml", "layouts/index.xml"],
+        "изображен": ["layouts/partials/post_meta.html",
+                       "internal/formatter/markdown.go"],
+        "перевод": ["internal/translator/ollama.go", "internal/translator/deepl.go"],
+        "категори": ["internal/formatter/markdown.go"],
+        "формат": ["internal/formatter/markdown.go"],
+        "fetch": ["internal/fetcher/rss.go", "internal/fetcher/scraper.go"],
+        "publish": ["internal/publisher/hugo.go", "internal/publisher/github.go"],
+    }
+
+    fetched_extra = set()
+    for keyword, paths in keyword_paths.items():
+        if keyword in discussion_text:
+            for fpath in paths:
+                if fpath not in fetched_extra:
+                    try:
+                        content, _ = get_file_content(target_repo, fpath)
+                        context_parts.append(
+                            f"=== {fpath} (keyword match: '{keyword}') ===\n"
+                            f"{content[:4000]}"
+                        )
+                        fetched_extra.add(fpath)
+                        log.info("admin.context.keyword_match",
+                                 keyword=keyword, path=fpath)
+                    except Exception:
+                        pass
+
+    full_context = "\n\n".join(context_parts)
+    # Cap total context to ~30K chars to stay within token limits
+    if len(full_context) > 30000:
+        full_context = full_context[:30000] + "\n\n[... context truncated ...]"
+
+    log.info("admin.context.done", total_chars=len(full_context))
+    return full_context
+
+
+# ---------------------------------------------------------------------------
+# Step 3: LLM generates code changes
+# ---------------------------------------------------------------------------
+
+PLAN_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", """You are a senior software engineer implementing improvements for a motorcycle blog ecosystem.
+You receive an improvement suggestion from a GitHub Discussion and source code from the target repository.
+Your job is to produce the exact file changes needed to implement the suggestion.
+
+CRITICAL RULES:
+1. Output ONLY valid JSON — no markdown fences, no explanations outside JSON.
+2. For each file, provide the COMPLETE file content (not diffs/patches).
+3. Only change files that are strictly necessary.
+4. Use descriptive branch names: feature/<short-description> or fix/<short-description>.
+5. Write clean, production-ready code with proper error handling.
+6. Keep the PR focused — one improvement per PR.
+7. If the suggestion cannot be implemented with code changes alone (needs manual steps,
+   infrastructure changes, etc.), set "feasible" to false and explain why.
+
+Output JSON schema:
+{{
+  "feasible": true,
+  "reason": "only if feasible=false — explain why",
+  "branch_name": "feature/short-description",
+  "pr_title": "Short PR title",
+  "pr_body": "Markdown description of what was changed and why",
+  "files": [
+    {{
+      "path": "relative/path/to/file",
+      "content": "full file content"
+    }}
+  ]
+}}"""),
+
+    ("human", """=== GitHub Discussion (Suggestion to Implement) ===
+Title: {discussion_title}
+Body:
+{discussion_body}
+
+=== Target Repository: {target_repo} ===
+
+{source_context}
+
+=== Instructions ===
+Analyze the suggestion and generate the code changes needed to implement it in the repository {target_repo}.
+Output ONLY a JSON object following the schema above. No other text."""),
+])
+
+
+def generate_changes(
+    config,
+    discussion: dict,
+    target_repo: str,
+    source_context: str,
+) -> dict:
+    """Ask the LLM to generate code changes for the discussion suggestion."""
+    log.info("admin.llm_generate",
+             discussion=discussion["number"],
+             target_repo=target_repo)
+
+    llm = create_llm(config, role="admin")
+    chain = PLAN_PROMPT | llm | StrOutputParser()
+
+    result_text = chain.invoke({
+        "discussion_title": discussion["title"],
+        "discussion_body": discussion["body"] or "(no body)",
+        "target_repo": target_repo,
+        "source_context": source_context,
+    })
+
+    log.info("admin.llm_generate.done", response_length=len(result_text))
+    log.debug("admin.llm_generate.raw", raw=result_text[:1000])
+
+    return _parse_changes_json(result_text)
+
+
+def _parse_changes_json(text: str) -> dict:
+    """Parse the LLM's JSON output with fallback strategies."""
+
+    # Strip markdown code fences
+    json_str = text.strip()
+    if "```json" in json_str:
+        json_str = json_str.split("```json", 1)[1].split("```", 1)[0]
+    elif "```" in json_str:
+        parts = json_str.split("```")
+        if len(parts) >= 2:
+            json_str = parts[1]
+
+    # Try direct parse
+    try:
+        return json.loads(json_str.strip())
+    except json.JSONDecodeError:
+        log.debug("admin.parse.direct_failed")
+
+    # Sanitize: fix unescaped newlines inside strings
+    sanitized = _sanitize_json_string(json_str.strip())
+    try:
+        return json.loads(sanitized)
+    except json.JSONDecodeError as e:
+        log.warning("admin.parse.sanitized_failed", error=str(e))
+
+    # Last resort: try to find JSON object in the text
+    match = re.search(r'\{[\s\S]*\}', text)
+    if match:
+        try:
+            return json.loads(_sanitize_json_string(match.group()))
+        except json.JSONDecodeError:
+            pass
+
+    raise ValueError(f"Could not parse LLM response as JSON. First 500 chars: {text[:500]}")
+
+
+def _sanitize_json_string(json_str: str) -> str:
+    """Fix unescaped newlines inside JSON string values."""
+    result = []
+    in_string = False
+    escape_next = False
+    for ch in json_str:
+        if escape_next:
+            result.append(ch)
+            escape_next = False
+            continue
+        if ch == '\\':
+            result.append(ch)
+            escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            result.append(ch)
+            continue
+        if in_string and ch == '\n':
+            result.append('\\n')
+            continue
+        if in_string and ch == '\t':
+            result.append('\\t')
+            continue
+        result.append(ch)
+    return ''.join(result)
+
+
+# ---------------------------------------------------------------------------
+# Step 4: Comment on discussion with PR link
+# ---------------------------------------------------------------------------
+
+def comment_on_discussion(repo: str, discussion_number: int, pr_url: str) -> None:
+    """Post a comment on the discussion with the PR link."""
+    owner, name = repo.split("/")
+
+    # Get discussion node ID
+    id_query = """
+    query($owner: String!, $name: String!, $number: Int!) {
+      repository(owner: $owner, name: $name) {
+        discussion(number: $number) { id }
+      }
+    }
+    """
+    data = _graphql_query(id_query, {
+        "owner": owner, "name": name, "number": discussion_number,
+    })
+    discussion_id = data["repository"]["discussion"]["id"]
+
+    body = (
+        f"{BOT_MARKER}\n"
+        f"**PR created:** {pr_url}\n\n"
+        f"This PR was automatically generated by the admin-agent "
+        f"based on this discussion.\n\n"
+        f"_Please review the changes before merging._"
+    )
+
+    mutation = """
+    mutation($discussionId: ID!, $body: String!) {
+      addDiscussionComment(input: {discussionId: $discussionId, body: $body}) {
+        comment { id url }
+      }
+    }
+    """
+    _graphql_query(mutation, {"discussionId": discussion_id, "body": body})
+    log.info("admin.comment_posted", discussion=discussion_number, pr_url=pr_url)
+
+
+# ---------------------------------------------------------------------------
+# Main pipeline
+# ---------------------------------------------------------------------------
+
+def determine_target_repo(discussion: dict) -> str:
+    """Determine which repo to create the PR in based on discussion content.
+
+    Heuristic: if the suggestion is about Hugo/blog/frontend, target the blog repo.
+    If it's about aggregator/fetcher/translator/agents code, target moto-news.
+    """
+    text = f"{discussion['title']} {discussion.get('body', '')}".lower()
+
+    moto_news_keywords = [
+        "aggregat", "fetcher", "rss", "scraper", "translator", "перевод",
+        "markdown", "formatter", "sqlite", "publisher", "agent", "pipeline",
+        "go ", "golang", "internal/",
+    ]
+    for kw in moto_news_keywords:
+        if kw in text:
+            return "eblooo/moto-news"
+
+    # Default: blog repo (most suggestions target the Hugo site)
+    return "KlimDos/my-blog"
+
+
+def process_discussion(
+    config,
+    discussion: dict,
+    dry_run: bool = False,
+) -> Optional[str]:
+    """Process a single discussion: generate changes and create PR.
+
+    Returns PR URL on success, None on failure or skip.
+    """
+    number = discussion["number"]
+    title = discussion["title"]
+    log.info("admin.process", discussion=number, title=title[:80])
+
+    if is_already_processed(discussion):
+        log.info("admin.process.skip_already_processed", discussion=number)
+        return None
+
+    # Determine target repo
+    target_repo = determine_target_repo(discussion)
+    log.info("admin.process.target_repo", discussion=number, repo=target_repo)
+
+    # Fetch source context
+    source_context = fetch_context_for_discussion(
+        target_repo=target_repo,
+        discussion_title=title,
+        discussion_body=discussion.get("body", ""),
+    )
+
+    # Generate changes with LLM (with retries)
+    changes = None
+    last_error = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            changes = generate_changes(config, discussion, target_repo, source_context)
+            break
+        except Exception as e:
+            last_error = e
+            log.warning("admin.llm.attempt_failed",
+                        attempt=attempt, error=str(e))
+            if attempt < MAX_RETRIES:
+                time.sleep(RETRY_DELAY_SECONDS)
+
+    if not changes:
+        log.error("admin.llm.all_retries_failed",
+                  discussion=number, error=str(last_error))
+        return None
+
+    # Check feasibility
+    if not changes.get("feasible", True):
+        reason = changes.get("reason", "unknown")
+        log.info("admin.process.not_feasible", discussion=number, reason=reason)
+        return None
+
+    files = changes.get("files", [])
+    branch = changes.get("branch_name", f"feature/discussion-{number}")
+    pr_title = changes.get("pr_title", f"Implement: {title[:60]}")
+    pr_body = changes.get("pr_body", f"Implements suggestion from discussion #{number}")
+
+    if not files:
+        log.warning("admin.process.no_files", discussion=number)
+        return None
+
+    log.info("admin.process.changes_ready",
+             discussion=number,
+             branch=branch,
+             files=[f["path"] for f in files])
+
+    if dry_run:
+        log.info("admin.process.dry_run_skip", discussion=number)
+        for f in files:
+            log.info("admin.dry_run.file",
+                     path=f["path"],
+                     content_length=len(f.get("content", "")))
+        return None
+
+    # Create the PR
+    try:
+        pr = apply_changes_as_pr(
+            repo=target_repo,
+            branch_name=branch,
+            pr_title=pr_title,
+            pr_body=(
+                f"{pr_body}\n\n---\n"
+                f"_Auto-generated from discussion "
+                f"[#{number}]({discussion['url']})_"
+            ),
+            files=files,
+        )
+        pr_url = pr["html_url"]
+        log.info("admin.process.pr_created",
+                 discussion=number, pr_url=pr_url)
+
+        # Comment on the discussion with PR link
+        discussion_repo = os.getenv("GITHUB_REPO", "KlimDos/my-blog")
+        try:
+            comment_on_discussion(discussion_repo, number, pr_url)
+        except Exception as e:
+            log.warning("admin.process.comment_failed",
+                        discussion=number, error=str(e))
+
+        return pr_url
+
+    except Exception as e:
+        log.error("admin.process.pr_failed",
+                  discussion=number, error=str(e))
+        return None
+
+
+def run_pipeline(config, once: bool = False, dry_run: bool = False) -> None:
+    """Main admin agent pipeline."""
+    log.info("admin.starting",
+             provider=config.llm.provider,
+             model=config.llm.admin_model,
+             repo=config.github.repo,
+             dry_run=dry_run)
+
+    while True:
+        try:
+            discussions = fetch_implement_discussions(config.github.repo)
+
+            if not discussions:
+                log.info("admin.no_implement_discussions")
+            else:
+                for d in discussions:
+                    try:
+                        pr_url = process_discussion(config, d, dry_run=dry_run)
+                        if pr_url:
+                            log.info("admin.discussion_done",
+                                     discussion=d["number"], pr_url=pr_url)
+                    except Exception as e:
+                        log.error("admin.discussion_error",
+                                  discussion=d["number"], error=str(e))
 
         except Exception as e:
-            log.error("admin.commit.file_error", file=str(file_path), error=str(e))
+            log.error("admin.pipeline_error", error=str(e))
 
-    if applied == 0:
-        return {"commit_result": "No changes applied"}
+        if once:
+            break
 
-    # Git commit
-    try:
-        subprocess.run(["git", "add", "."], cwd=blog_path, check=True)
-        msg = f"AI Admin Agent: apply {applied} changes ({datetime.now().strftime('%Y-%m-%d')})"
-        subprocess.run(["git", "commit", "-m", msg], cwd=blog_path, check=True)
-        log.info("admin.commit.success", applied=applied)
-        return {"commit_result": f"Committed {applied} changes"}
-    except subprocess.CalledProcessError as e:
-        log.error("admin.commit.git_error", error=str(e))
-        return {
-            "commit_result": f"Git error: {e}",
-            "errors": state.get("errors", []) + [f"git commit: {e}"],
-        }
+        delay = config.schedule_interval_minutes * 60
+        log.info("admin.sleeping", minutes=config.schedule_interval_minutes)
+        time.sleep(delay)
 
-
-# ===== Router =====
-
-def should_continue(state: AdminState) -> Literal["human_approval", "end"]:
-    """Decide whether to proceed to approval or end."""
-    changes = state.get("proposed_changes", [])
-    if changes:
-        return "human_approval"
-    return "end"
-
-
-def should_commit(state: AdminState) -> Literal["commit_changes", "end"]:
-    """Decide whether to commit or end."""
-    if state.get("approval_status") == "approved":
-        return "commit_changes"
-    return "end"
-
-
-# ===== Graph Builder =====
-
-def build_admin_graph():
-    """Build the LangGraph state machine for the admin agent."""
-    graph = StateGraph(AdminState)
-
-    # Add nodes
-    graph.add_node("assess_site", assess_site)
-    graph.add_node("read_discussions", read_discussions)
-    graph.add_node("analyze", analyze)
-    graph.add_node("human_approval", human_approval)
-    graph.add_node("commit_changes", commit_changes)
-
-    # Add edges
-    graph.set_entry_point("assess_site")
-    graph.add_edge("assess_site", "read_discussions")
-    graph.add_edge("read_discussions", "analyze")
-    graph.add_conditional_edges("analyze", should_continue, {
-        "human_approval": "human_approval",
-        "end": END,
-    })
-    graph.add_conditional_edges("human_approval", should_commit, {
-        "commit_changes": "commit_changes",
-        "end": END,
-    })
-    graph.add_edge("commit_changes", END)
-
-    return graph.compile()
-
-
-# ===== Main =====
 
 def main():
-    parser = argparse.ArgumentParser(description="Admin Agent for blog.alimov.top")
-    parser.add_argument("--config", default=None, help="Path to agents config YAML")
-    parser.add_argument("--auto-approve", action="store_true",
-                        help="Skip human approval (DANGEROUS)")
+    parser = argparse.ArgumentParser(description="Admin Agent — implement suggestions as PRs")
+    parser.add_argument("--config", default=None, help="Path to agents.yaml config")
     parser.add_argument("--once", action="store_true", help="Run once and exit")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Generate changes but don't create PRs")
     args = parser.parse_args()
 
     config = load_config(args.config)
 
     if not config.github.token:
-        print("WARNING: GITHUB_TOKEN not set. GitHub features will be limited.")
+        print("Error: GITHUB_TOKEN is required.")
+        sys.exit(1)
 
-    if not config.site.repo_path:
-        print("WARNING: BLOG_REPO_PATH not set. Cannot commit changes.")
-
-    if args.auto_approve:
-        print("WARNING: Auto-approve enabled. Changes will be applied without review!")
-
-    graph = build_admin_graph()
-
-    initial_state: AdminState = {
-        "site_snapshot": "",
-        "discussions": [],
-        "analysis": "",
-        "proposed_changes": [],
-        "approval_status": "pending",
-        "commit_result": "",
-        "errors": [],
-        "messages": [],
-        "_config": config,
-        "_auto_approve": args.auto_approve,
-    }
-
-    if args.once:
-        result = graph.invoke(initial_state)
-        print("\n" + "=" * 50)
-        print("ADMIN AGENT RESULT")
-        print("=" * 50)
-        print(f"Analysis:\n{result.get('analysis', 'N/A')[:1000]}")
-        print(f"\nProposed changes: {len(result.get('proposed_changes', []))}")
-        print(f"Approval: {result.get('approval_status', 'N/A')}")
-        print(f"Commit: {result.get('commit_result', 'N/A')}")
-        if result.get("errors"):
-            print(f"\nErrors: {result['errors']}")
-    else:
-        # Periodic mode
-        interval = config.schedule_interval_minutes * 60
-        while True:
-            try:
-                result = graph.invoke(initial_state)
-                log.info("admin.cycle_complete",
-                         changes=len(result.get("proposed_changes", [])),
-                         approval=result.get("approval_status"),
-                         commit=result.get("commit_result"))
-            except Exception as e:
-                log.error("admin.cycle_error", error=str(e))
-
-            log.info("admin.sleeping", minutes=config.schedule_interval_minutes)
-            time.sleep(interval)
+    run_pipeline(config, once=args.once, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":

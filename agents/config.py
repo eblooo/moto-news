@@ -15,12 +15,13 @@ import yaml
 
 @dataclass
 class LLMConfig:
-    """Provider-agnostic LLM config used by user_agent and site_assessor."""
+    """Provider-agnostic LLM config used by all agents."""
     provider: str = "openrouter"           # "openrouter" or "ollama"
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     user_model: str = "meta-llama/llama-3.3-70b-instruct:free"
     coder_model: str = "meta-llama/llama-3.3-70b-instruct:free"
+    admin_model: str = "meta-llama/llama-3.3-70b-instruct:free"
     temperature: float = 0.35
 
 
@@ -95,6 +96,7 @@ def load_config(config_path: Optional[str] = None) -> AgentConfig:
     cfg.llm.openrouter_api_key = os.getenv("OPENROUTER_API_KEY", cfg.llm.openrouter_api_key)
     cfg.llm.user_model = os.getenv("OPENROUTER_MODEL", cfg.llm.user_model)
     cfg.llm.coder_model = os.getenv("OPENROUTER_CODER_MODEL", cfg.llm.coder_model)
+    cfg.llm.admin_model = os.getenv("OPENROUTER_ADMIN_MODEL", cfg.llm.admin_model)
 
     # Override with environment variables — Ollama (admin_agent)
     cfg.ollama.host = os.getenv("OLLAMA_HOST", cfg.ollama.host)
@@ -116,27 +118,22 @@ def create_llm(config: AgentConfig, role: str = "user"):
 
     Args:
         config: Loaded agent config.
-        role:   "user" picks config.llm.user_model,
+        role:   "user"  picks config.llm.user_model,
                 "coder" picks config.llm.coder_model,
-                "admin" always uses Ollama (config.ollama.admin_model).
+                "admin" picks config.llm.admin_model.
 
     Returns:
         A LangChain BaseChatModel instance (ChatOpenAI or ChatOllama).
     """
-    # admin_agent always uses local Ollama
-    if role == "admin":
-        from langchain_ollama import ChatOllama
-        return ChatOllama(
-            model=config.ollama.admin_model,
-            base_url=config.ollama.host,
-            temperature=config.ollama.temperature,
-            num_ctx=config.ollama.num_ctx,
-        )
-
     if config.llm.provider == "openrouter":
         from langchain_openai import ChatOpenAI
 
-        model = config.llm.user_model if role == "user" else config.llm.coder_model
+        model_map = {
+            "user": config.llm.user_model,
+            "coder": config.llm.coder_model,
+            "admin": config.llm.admin_model,
+        }
+        model = model_map.get(role, config.llm.user_model)
         return ChatOpenAI(
             model=model,
             api_key=config.llm.openrouter_api_key,
@@ -144,10 +141,15 @@ def create_llm(config: AgentConfig, role: str = "user"):
             temperature=config.llm.temperature,
         )
     else:
-        # Fallback to Ollama for user/coder roles too
+        # Fallback to Ollama
         from langchain_ollama import ChatOllama
 
-        model = config.ollama.user_model if role == "user" else config.ollama.coder_model
+        model_map = {
+            "user": config.ollama.user_model,
+            "coder": config.ollama.coder_model,
+            "admin": config.ollama.admin_model,
+        }
+        model = model_map.get(role, config.ollama.user_model)
         return ChatOllama(
             model=model,
             base_url=config.ollama.host,
