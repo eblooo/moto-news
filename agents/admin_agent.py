@@ -468,41 +468,7 @@ def comment_on_discussion(repo: str, discussion_number: int, pr_url: str) -> Non
 # Main pipeline
 # ---------------------------------------------------------------------------
 
-def determine_target_repo(discussion: dict) -> str:
-    """Determine which repo to create the PR in based on discussion content.
-
-    Heuristic: check blog-specific keywords first (higher priority),
-    then moto-news keywords. Default is blog repo.
-    """
-    text = f"{discussion['title']} {discussion.get('body', '')}".lower()
-
-    # Blog-specific keywords take priority — if these appear, it's a blog change
-    blog_keywords = [
-        "hugo", "papermod", "robots.txt", "robots", "sitemap",
-        "seo", "мета-тег", "meta", "навигац", "меню",
-        "css", "шрифт", "font", "layout", "шаблон", "template",
-        "static/", "layouts/", "config.toml", "config.yaml",
-        "favicon", "manifest", "pwa",
-    ]
-    for kw in blog_keywords:
-        if kw in text:
-            log.info("admin.target_repo.blog_match", keyword=kw)
-            return "KlimDos/my-blog"
-
-    # Aggregator/agents-specific keywords
-    moto_news_keywords = [
-        "aggregat", "fetcher", "scraper", "translator", "перевод",
-        "markdown formatter", "sqlite", "publisher",
-        "golang", "internal/", "go.mod",
-    ]
-    for kw in moto_news_keywords:
-        if kw in text:
-            log.info("admin.target_repo.moto_news_match", keyword=kw)
-            return "eblooo/moto-news"
-
-    # Default: blog repo (most suggestions target the Hugo site)
-    log.info("admin.target_repo.default_blog")
-    return "KlimDos/my-blog"
+TARGET_REPO = "eblooo/moto-news"
 
 
 def _token_for_repo(repo: str) -> Optional[str]:
@@ -541,8 +507,7 @@ def process_discussion(
         log.info("admin.process.skip_already_processed", discussion=number)
         return None
 
-    # Determine target repo
-    target_repo = determine_target_repo(discussion)
+    target_repo = TARGET_REPO
     log.info("admin.process.target_repo", discussion=number, repo=target_repo)
 
     # Fetch source context (with retries)
