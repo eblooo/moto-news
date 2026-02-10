@@ -41,8 +41,8 @@ from tools.github_pr import apply_changes_as_pr, get_file_content
 log = structlog.get_logger()
 
 BOT_MARKER = "<!-- admin-agent-pr -->"
-MAX_RETRIES = 2
-RETRY_DELAY_SECONDS = 20
+MAX_RETRIES = 3
+RETRY_DELAY_SECONDS = 15
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +50,10 @@ RETRY_DELAY_SECONDS = 20
 # ---------------------------------------------------------------------------
 
 def fetch_implement_discussions(repo: str) -> list[dict]:
-    """Fetch discussions that have the 'Implement' label."""
+    """Fetch discussions that have the 'Implement' label.
+
+    Includes retries for transient DNS/network failures in K8s.
+    """
     log.info("admin.fetch_discussions", repo=repo)
     owner, name = repo.split("/")
 
@@ -80,19 +83,31 @@ def fetch_implement_discussions(repo: str) -> list[dict]:
     }
     """
 
-    data = _graphql_query(query, {"owner": owner, "name": name})
-    all_discussions = data["repository"]["discussions"]["nodes"]
+    last_error = None
+    for attempt in range(1, 4):
+        try:
+            data = _graphql_query(query, {"owner": owner, "name": name})
+            all_discussions = data["repository"]["discussions"]["nodes"]
 
-    # Filter: must have "Implement" label
-    implement = []
-    for d in all_discussions:
-        labels = [l["name"].lower() for l in d.get("labels", {}).get("nodes", [])]
-        if "implement" in labels:
-            implement.append(d)
+            # Filter: must have "Implement" label
+            implement = []
+            for d in all_discussions:
+                labels = [l["name"].lower() for l in d.get("labels", {}).get("nodes", [])]
+                if "implement" in labels:
+                    implement.append(d)
 
-    log.info("admin.fetch_discussions.done",
-             total=len(all_discussions), with_implement_label=len(implement))
-    return implement
+            log.info("admin.fetch_discussions.done",
+                     total=len(all_discussions), with_implement_label=len(implement))
+            return implement
+        except Exception as e:
+            last_error = e
+            log.warning("admin.fetch_discussions.attempt_failed",
+                        attempt=attempt, error=str(e))
+            if attempt < 3:
+                time.sleep(10)
+
+    log.error("admin.fetch_discussions.all_failed", error=str(last_error))
+    raise RuntimeError(f"Failed to fetch discussions after 3 attempts: {last_error}")
 
 
 def is_already_processed(discussion: dict) -> bool:
@@ -109,7 +124,10 @@ def is_already_processed(discussion: dict) -> bool:
 # ---------------------------------------------------------------------------
 
 def fetch_repo_tree(repo: str, path: str = "", ref: str = "main") -> list[str]:
-    """Recursively list files in a repo directory. Returns list of paths."""
+    """Recursively list files in a repo directory. Returns list of paths.
+
+    Includes retries for transient network failures.
+    """
     import httpx
 
     headers = {
@@ -117,15 +135,26 @@ def fetch_repo_tree(repo: str, path: str = "", ref: str = "main") -> list[str]:
         "Accept": "application/vnd.github.v3+json",
     }
 
-    r = httpx.get(
-        f"https://api.github.com/repos/{repo}/git/trees/{ref}",
-        headers=headers,
-        params={"recursive": "1"},
-        timeout=30,
-    )
-    r.raise_for_status()
-    tree = r.json().get("tree", [])
-    return [item["path"] for item in tree if item["type"] == "blob"]
+    last_error = None
+    for attempt in range(1, 4):
+        try:
+            r = httpx.get(
+                f"https://api.github.com/repos/{repo}/git/trees/{ref}",
+                headers=headers,
+                params={"recursive": "1"},
+                timeout=30,
+            )
+            r.raise_for_status()
+            tree = r.json().get("tree", [])
+            return [item["path"] for item in tree if item["type"] == "blob"]
+        except Exception as e:
+            last_error = e
+            log.warning("admin.fetch_tree.attempt_failed",
+                        repo=repo, attempt=attempt, error=str(e))
+            if attempt < 3:
+                time.sleep(5)
+
+    raise RuntimeError(f"Failed to fetch repo tree after 3 attempts: {last_error}")
 
 
 def fetch_context_for_discussion(
@@ -275,13 +304,21 @@ def generate_changes(
     target_repo: str,
     source_context: str,
 ) -> dict:
-    """Ask the LLM to generate code changes for the discussion suggestion."""
+    """Ask the LLM to generate code changes for the discussion suggestion.
+
+    Includes timing and detailed logging.
+    """
     log.info("admin.llm_generate",
              discussion=discussion["number"],
-             target_repo=target_repo)
+             target_repo=target_repo,
+             provider=config.llm.provider,
+             model=config.llm.admin_model)
 
     llm = create_llm(config, role="admin")
     chain = PLAN_PROMPT | llm | StrOutputParser()
+
+    llm_start = time.monotonic()
+    log.info("admin.llm_generate.invoking")
 
     result_text = chain.invoke({
         "discussion_title": discussion["title"],
@@ -290,7 +327,10 @@ def generate_changes(
         "source_context": source_context,
     })
 
-    log.info("admin.llm_generate.done", response_length=len(result_text))
+    elapsed = round(time.monotonic() - llm_start, 1)
+    log.info("admin.llm_generate.done",
+             response_length=len(result_text),
+             elapsed_seconds=elapsed)
     log.debug("admin.llm_generate.raw", raw=result_text[:1000])
 
     return _parse_changes_json(result_text)
@@ -365,7 +405,10 @@ def _sanitize_json_string(json_str: str) -> str:
 # ---------------------------------------------------------------------------
 
 def comment_on_discussion(repo: str, discussion_number: int, pr_url: str) -> None:
-    """Post a comment on the discussion with the PR link."""
+    """Post a comment on the discussion with the PR link.
+
+    Includes retries for transient network failures.
+    """
     owner, name = repo.split("/")
 
     # Get discussion node ID
@@ -376,10 +419,6 @@ def comment_on_discussion(repo: str, discussion_number: int, pr_url: str) -> Non
       }
     }
     """
-    data = _graphql_query(id_query, {
-        "owner": owner, "name": name, "number": discussion_number,
-    })
-    discussion_id = data["repository"]["discussion"]["id"]
 
     body = (
         f"{BOT_MARKER}\n"
@@ -396,8 +435,29 @@ def comment_on_discussion(repo: str, discussion_number: int, pr_url: str) -> Non
       }
     }
     """
-    _graphql_query(mutation, {"discussionId": discussion_id, "body": body})
-    log.info("admin.comment_posted", discussion=discussion_number, pr_url=pr_url)
+
+    last_error = None
+    for attempt in range(1, 4):
+        try:
+            data = _graphql_query(id_query, {
+                "owner": owner, "name": name, "number": discussion_number,
+            })
+            discussion_id = data["repository"]["discussion"]["id"]
+
+            _graphql_query(mutation, {"discussionId": discussion_id, "body": body})
+            log.info("admin.comment_posted",
+                     discussion=discussion_number, pr_url=pr_url)
+            return
+        except Exception as e:
+            last_error = e
+            log.warning("admin.comment.attempt_failed",
+                        discussion=discussion_number,
+                        attempt=attempt, error=str(e))
+            if attempt < 3:
+                time.sleep(5)
+
+    log.error("admin.comment.all_failed",
+              discussion=discussion_number, error=str(last_error))
 
 
 # ---------------------------------------------------------------------------
@@ -432,10 +492,12 @@ def process_discussion(
 ) -> Optional[str]:
     """Process a single discussion: generate changes and create PR.
 
-    Returns PR URL on success, None on failure or skip.
+    Includes full retry logic for each step. Returns PR URL on success, None on skip/failure.
     """
     number = discussion["number"]
     title = discussion["title"]
+    start_time = time.monotonic()
+
     log.info("admin.process", discussion=number, title=title[:80])
 
     if is_already_processed(discussion):
@@ -446,36 +508,75 @@ def process_discussion(
     target_repo = determine_target_repo(discussion)
     log.info("admin.process.target_repo", discussion=number, repo=target_repo)
 
-    # Fetch source context
-    source_context = fetch_context_for_discussion(
-        target_repo=target_repo,
-        discussion_title=title,
-        discussion_body=discussion.get("body", ""),
-    )
+    # Fetch source context (with retries)
+    source_context = None
+    for attempt in range(1, 4):
+        try:
+            log.info("admin.process.fetch_context",
+                     discussion=number, attempt=attempt)
+            source_context = fetch_context_for_discussion(
+                target_repo=target_repo,
+                discussion_title=title,
+                discussion_body=discussion.get("body", ""),
+            )
+            break
+        except Exception as e:
+            log.warning("admin.process.fetch_context_failed",
+                        discussion=number, attempt=attempt, error=str(e))
+            if attempt < 3:
+                time.sleep(10)
+
+    if not source_context:
+        log.error("admin.process.no_context", discussion=number)
+        return None
+
+    elapsed_context = round(time.monotonic() - start_time, 1)
+    log.info("admin.process.context_ready",
+             discussion=number,
+             context_chars=len(source_context),
+             elapsed_seconds=elapsed_context)
 
     # Generate changes with LLM (with retries)
     changes = None
     last_error = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
+            log.info("admin.process.llm_attempt",
+                     discussion=number,
+                     attempt=attempt,
+                     max_retries=MAX_RETRIES)
             changes = generate_changes(config, discussion, target_repo, source_context)
             break
         except Exception as e:
             last_error = e
-            log.warning("admin.llm.attempt_failed",
-                        attempt=attempt, error=str(e))
+            log.warning("admin.process.llm_attempt_failed",
+                        discussion=number,
+                        attempt=attempt,
+                        max_retries=MAX_RETRIES,
+                        error=str(e),
+                        error_type=type(e).__name__)
             if attempt < MAX_RETRIES:
-                time.sleep(RETRY_DELAY_SECONDS)
+                delay = RETRY_DELAY_SECONDS * attempt
+                log.info("admin.process.llm_retrying",
+                         discussion=number,
+                         next_attempt=attempt + 1,
+                         delay_seconds=delay)
+                time.sleep(delay)
 
     if not changes:
-        log.error("admin.llm.all_retries_failed",
-                  discussion=number, error=str(last_error))
+        elapsed = round(time.monotonic() - start_time, 1)
+        log.error("admin.process.llm_all_failed",
+                  discussion=number,
+                  error=str(last_error),
+                  elapsed_seconds=elapsed)
         return None
 
     # Check feasibility
     if not changes.get("feasible", True):
         reason = changes.get("reason", "unknown")
-        log.info("admin.process.not_feasible", discussion=number, reason=reason)
+        elapsed = round(time.monotonic() - start_time, 1)
+        log.info("admin.process.not_feasible",
+                 discussion=number, reason=reason, elapsed_seconds=elapsed)
         return None
 
     files = changes.get("files", [])
@@ -490,76 +591,125 @@ def process_discussion(
     log.info("admin.process.changes_ready",
              discussion=number,
              branch=branch,
+             file_count=len(files),
              files=[f["path"] for f in files])
 
     if dry_run:
-        log.info("admin.process.dry_run_skip", discussion=number)
+        elapsed = round(time.monotonic() - start_time, 1)
+        log.info("admin.process.dry_run_skip",
+                 discussion=number, elapsed_seconds=elapsed)
         for f in files:
             log.info("admin.dry_run.file",
                      path=f["path"],
                      content_length=len(f.get("content", "")))
         return None
 
-    # Create the PR
-    try:
-        pr = apply_changes_as_pr(
-            repo=target_repo,
-            branch_name=branch,
-            pr_title=pr_title,
-            pr_body=(
-                f"{pr_body}\n\n---\n"
-                f"_Auto-generated from discussion "
-                f"[#{number}]({discussion['url']})_"
-            ),
-            files=files,
-        )
-        pr_url = pr["html_url"]
-        log.info("admin.process.pr_created",
-                 discussion=number, pr_url=pr_url)
-
-        # Comment on the discussion with PR link
-        discussion_repo = os.getenv("GITHUB_REPO", "KlimDos/my-blog")
+    # Create the PR (with retries for transient GitHub API failures)
+    last_error = None
+    for attempt in range(1, MAX_RETRIES + 1):
         try:
+            log.info("admin.process.creating_pr",
+                     discussion=number, attempt=attempt, branch=branch)
+            pr = apply_changes_as_pr(
+                repo=target_repo,
+                branch_name=branch,
+                pr_title=pr_title,
+                pr_body=(
+                    f"{pr_body}\n\n---\n"
+                    f"_Auto-generated from discussion "
+                    f"[#{number}]({discussion['url']})_"
+                ),
+                files=files,
+            )
+            pr_url = pr["html_url"]
+            elapsed = round(time.monotonic() - start_time, 1)
+            log.info("admin.process.pr_created",
+                     discussion=number, pr_url=pr_url,
+                     elapsed_seconds=elapsed)
+
+            # Comment on the discussion with PR link
+            discussion_repo = config.github.repo
             comment_on_discussion(discussion_repo, number, pr_url)
+
+            return pr_url
+
         except Exception as e:
-            log.warning("admin.process.comment_failed",
-                        discussion=number, error=str(e))
+            last_error = e
+            log.warning("admin.process.pr_attempt_failed",
+                        discussion=number,
+                        attempt=attempt,
+                        error=str(e),
+                        error_type=type(e).__name__)
+            if attempt < MAX_RETRIES:
+                delay = RETRY_DELAY_SECONDS * attempt
+                log.info("admin.process.pr_retrying",
+                         next_attempt=attempt + 1, delay_seconds=delay)
+                time.sleep(delay)
 
-        return pr_url
-
-    except Exception as e:
-        log.error("admin.process.pr_failed",
-                  discussion=number, error=str(e))
-        return None
+    elapsed = round(time.monotonic() - start_time, 1)
+    log.error("admin.process.pr_all_failed",
+              discussion=number,
+              error=str(last_error),
+              elapsed_seconds=elapsed)
+    return None
 
 
 def run_pipeline(config, once: bool = False, dry_run: bool = False) -> None:
-    """Main admin agent pipeline."""
+    """Main admin agent pipeline with full retry and timing."""
     log.info("admin.starting",
              provider=config.llm.provider,
              model=config.llm.admin_model,
              repo=config.github.repo,
-             dry_run=dry_run)
+             github_token_set=bool(config.github.token),
+             dry_run=dry_run,
+             pid=os.getpid())
 
+    run_count = 0
     while True:
+        run_count += 1
+        run_start = time.monotonic()
+        log.info("admin.run", run_number=run_count)
+
         try:
             discussions = fetch_implement_discussions(config.github.repo)
 
             if not discussions:
                 log.info("admin.no_implement_discussions")
             else:
+                processed = 0
+                skipped = 0
+                failed = 0
                 for d in discussions:
                     try:
                         pr_url = process_discussion(config, d, dry_run=dry_run)
                         if pr_url:
+                            processed += 1
                             log.info("admin.discussion_done",
                                      discussion=d["number"], pr_url=pr_url)
+                        else:
+                            skipped += 1
                     except Exception as e:
+                        failed += 1
                         log.error("admin.discussion_error",
-                                  discussion=d["number"], error=str(e))
+                                  discussion=d["number"],
+                                  error=str(e),
+                                  error_type=type(e).__name__)
+
+                run_elapsed = round(time.monotonic() - run_start, 1)
+                log.info("admin.run_complete",
+                         run_number=run_count,
+                         total=len(discussions),
+                         processed=processed,
+                         skipped=skipped,
+                         failed=failed,
+                         elapsed_seconds=run_elapsed)
 
         except Exception as e:
-            log.error("admin.pipeline_error", error=str(e))
+            run_elapsed = round(time.monotonic() - run_start, 1)
+            log.error("admin.pipeline_error",
+                      error=str(e),
+                      error_type=type(e).__name__,
+                      elapsed_seconds=run_elapsed)
 
         if once:
             break
@@ -577,10 +727,23 @@ def main():
                         help="Generate changes but don't create PRs")
     args = parser.parse_args()
 
+    log.info("admin.starting",
+             config_path=args.config,
+             once=args.once,
+             dry_run=args.dry_run,
+             pid=os.getpid())
+
     config = load_config(args.config)
 
+    log.info("admin.config_loaded",
+             llm_provider=config.llm.provider,
+             llm_model=config.llm.admin_model,
+             github_repo=config.github.repo,
+             github_token_set=bool(config.github.token))
+
     if not config.github.token:
-        print("Error: GITHUB_TOKEN is required.")
+        log.error("admin.no_github_token",
+                  hint="export GITHUB_TOKEN=ghp_xxxxxxxxxxxx or use --dry-run")
         sys.exit(1)
 
     run_pipeline(config, once=args.once, dry_run=args.dry_run)
