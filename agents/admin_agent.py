@@ -159,95 +159,108 @@ def fetch_repo_tree(repo: str, path: str = "", ref: str = "main",
     raise RuntimeError(f"Failed to fetch repo tree after 3 attempts: {last_error}")
 
 
+REPOS = {
+    "blog": "KlimDos/my-blog",
+    "aggregator": "eblooo/moto-news",
+}
+
+# Key files to fetch per repo
+_BLOG_KEY_FILES = [
+    "config.yaml", "config.toml", "hugo.yaml", "hugo.toml",
+]
+_AGGREGATOR_KEY_FILES = [
+    "config.yaml", "go.mod",
+    "agents/agents.yaml", "agents/requirements.txt",
+    "Dockerfile", "agents/Dockerfile",
+]
+
+# Keyword → (repo_key, [paths]) for targeted file fetching
+_KEYWORD_FILES = {
+    "seo": ("blog", ["layouts/partials/head.html", "layouts/partials/seo.html",
+                      "layouts/_default/baseof.html"]),
+    "robot": ("blog", ["static/robots.txt"]),
+    "sitemap": ("blog", ["layouts/sitemap.xml"]),
+    "навигац": ("blog", ["layouts/partials/header.html", "layouts/partials/nav.html"]),
+    "меню": ("blog", ["layouts/partials/header.html"]),
+    "css": ("blog", ["assets/css/extended/custom.css", "assets/css/common/main.css"]),
+    "rss": ("blog", ["layouts/_default/rss.xml", "layouts/index.xml"]),
+    "изображен": ("blog", ["layouts/partials/post_meta.html"]),
+    "перевод": ("aggregator", ["internal/translator/ollama.go",
+                                "internal/translator/deepl.go"]),
+    "категори": ("aggregator", ["internal/formatter/markdown.go"]),
+    "формат": ("aggregator", ["internal/formatter/markdown.go"]),
+    "fetch": ("aggregator", ["internal/fetcher/rss.go",
+                              "internal/fetcher/scraper.go"]),
+    "publish": ("aggregator", ["internal/publisher/hugo.go",
+                                "internal/publisher/github.go"]),
+}
+
+
 def fetch_context_for_discussion(
-    target_repo: str,
     discussion_title: str,
     discussion_body: str,
 ) -> str:
-    """Build source code context relevant to the discussion suggestion.
+    """Build source code context from BOTH repos for the LLM.
 
-    Fetches:
-    - Repository file tree (structure)
-    - Key config files
-    - Files that might be relevant based on the discussion text
+    Fetches file trees and key config files from both repos,
+    plus keyword-matched files relevant to the discussion.
     """
-    repo_token = _token_for_repo(target_repo)
     context_parts = []
 
-    # 1. File tree
-    try:
-        tree = fetch_repo_tree(target_repo, token=repo_token)
-        # Show truncated tree
-        tree_text = "\n".join(tree[:200])
-        if len(tree) > 200:
-            tree_text += f"\n... and {len(tree) - 200} more files"
-        context_parts.append(f"=== Repository file tree ({target_repo}) ===\n{tree_text}")
-        log.info("admin.context.tree", repo=target_repo, files=len(tree))
-    except Exception as e:
-        log.warning("admin.context.tree_error", error=str(e))
-        context_parts.append(f"=== File tree unavailable: {e} ===")
-
-    # 2. Key config files (try common ones)
-    key_files = [
-        "config.yaml", "config.toml", "config.yml",
-        "hugo.yaml", "hugo.toml",
-        "go.mod",
-        "agents/agents.yaml",
-        "agents/requirements.txt",
-        "Dockerfile",
-        "agents/Dockerfile",
-    ]
-
-    for fpath in key_files:
+    # 1. File trees from both repos
+    for label, repo in REPOS.items():
+        token = _token_for_repo(repo)
         try:
-            content, _ = get_file_content(target_repo, fpath, token=repo_token)
-            context_parts.append(f"=== {fpath} ===\n{content[:3000]}")
-            log.info("admin.context.file_ok", path=fpath)
-        except Exception:
-            pass  # File doesn't exist, skip
+            tree = fetch_repo_tree(repo, token=token)
+            tree_text = "\n".join(tree[:150])
+            if len(tree) > 150:
+                tree_text += f"\n... and {len(tree) - 150} more files"
+            context_parts.append(
+                f"=== File tree: {repo} ({label}) ===\n{tree_text}")
+            log.info("admin.context.tree", repo=repo, files=len(tree))
+        except Exception as e:
+            log.warning("admin.context.tree_error", repo=repo, error=str(e))
 
-    # 3. Try to find relevant files based on discussion keywords
+    # 2. Key config files from both repos
+    for repo, key_files in [
+        (REPOS["blog"], _BLOG_KEY_FILES),
+        (REPOS["aggregator"], _AGGREGATOR_KEY_FILES),
+    ]:
+        token = _token_for_repo(repo)
+        for fpath in key_files:
+            try:
+                content, _ = get_file_content(repo, fpath, token=token)
+                context_parts.append(
+                    f"=== {repo}: {fpath} ===\n{content[:3000]}")
+                log.info("admin.context.file_ok", repo=repo, path=fpath)
+            except Exception:
+                pass
+
+    # 3. Keyword-matched files
     discussion_text = f"{discussion_title} {discussion_body}".lower()
+    fetched_extra: set[str] = set()
 
-    # Map common keywords to relevant paths
-    keyword_paths = {
-        "seo": ["layouts/partials/head.html", "layouts/partials/seo.html",
-                 "layouts/_default/baseof.html"],
-        "robot": ["static/robots.txt", "layouts/robots.txt"],
-        "sitemap": ["layouts/sitemap.xml", "config.yaml"],
-        "навигац": ["layouts/partials/header.html", "layouts/partials/nav.html"],
-        "rss": ["layouts/_default/rss.xml", "layouts/index.xml"],
-        "изображен": ["layouts/partials/post_meta.html",
-                       "internal/formatter/markdown.go"],
-        "перевод": ["internal/translator/ollama.go", "internal/translator/deepl.go"],
-        "категори": ["internal/formatter/markdown.go"],
-        "формат": ["internal/formatter/markdown.go"],
-        "fetch": ["internal/fetcher/rss.go", "internal/fetcher/scraper.go"],
-        "publish": ["internal/publisher/hugo.go", "internal/publisher/github.go"],
-    }
-
-    fetched_extra = set()
-    for keyword, paths in keyword_paths.items():
+    for keyword, (repo_key, paths) in _KEYWORD_FILES.items():
         if keyword in discussion_text:
+            repo = REPOS[repo_key]
+            token = _token_for_repo(repo)
             for fpath in paths:
-                if fpath not in fetched_extra:
+                key = f"{repo}:{fpath}"
+                if key not in fetched_extra:
                     try:
-                        content, _ = get_file_content(
-                            target_repo, fpath, token=repo_token)
+                        content, _ = get_file_content(repo, fpath, token=token)
                         context_parts.append(
-                            f"=== {fpath} (keyword match: '{keyword}') ===\n"
-                            f"{content[:4000]}"
-                        )
-                        fetched_extra.add(fpath)
+                            f"=== {repo}: {fpath} (keyword: '{keyword}') ===\n"
+                            f"{content[:4000]}")
+                        fetched_extra.add(key)
                         log.info("admin.context.keyword_match",
-                                 keyword=keyword, path=fpath)
+                                 repo=repo, keyword=keyword, path=fpath)
                     except Exception:
                         pass
 
     full_context = "\n\n".join(context_parts)
-    # Cap total context to ~30K chars to stay within token limits
-    if len(full_context) > 30000:
-        full_context = full_context[:30000] + "\n\n[... context truncated ...]"
+    if len(full_context) > 40000:
+        full_context = full_context[:40000] + "\n\n[... context truncated ...]"
 
     log.info("admin.context.done", total_chars=len(full_context))
     return full_context
@@ -259,30 +272,44 @@ def fetch_context_for_discussion(
 
 PLAN_PROMPT = ChatPromptTemplate.from_messages([
     ("system", """You are a senior software engineer implementing improvements for a motorcycle blog ecosystem.
-You receive an improvement suggestion from a GitHub Discussion and source code from the target repository.
-Your job is to produce the exact file changes needed to implement the suggestion.
+You have access to TWO repositories:
+
+1. **eblooo/moto-news** — Go-based news aggregator + Python AI agents
+   - cmd/, internal/ — Go backend (RSS fetcher, translator, publisher)
+   - agents/ — Python AI agents (user_agent, site_assessor, admin_agent)
+   - config.yaml — aggregator config (RSS sources, translator settings)
+
+2. **KlimDos/my-blog** — Hugo blog site (theme: PaperMod)
+   - config.yaml / hugo.yaml — Hugo site configuration
+   - layouts/ — Hugo templates (partials, shortcodes, pages)
+   - static/ — static files (robots.txt, favicons, images)
+   - content/ — blog posts (auto-generated markdown)
+
+You MUST set "target_repo" to the correct repository for the changes.
+Blog/frontend changes (robots.txt, SEO, templates, CSS) → "KlimDos/my-blog"
+Aggregator/agent changes (Go code, Python agents, RSS config) → "eblooo/moto-news"
 
 CRITICAL RULES:
 1. Output ONLY valid JSON — no markdown fences, no explanations outside JSON.
-2. For each file, provide the COMPLETE file content (not diffs/patches).
+2. The "content" field for each file MUST be a STRING (the full file text), never an object/dict.
 3. Only change files that are strictly necessary.
 4. Use descriptive branch names: feature/<short-description> or fix/<short-description>.
 5. Write clean, production-ready code with proper error handling.
 6. Keep the PR focused — one improvement per PR.
-7. If the suggestion cannot be implemented with code changes alone (needs manual steps,
-   infrastructure changes, etc.), set "feasible" to false and explain why.
+7. If the suggestion cannot be implemented with code changes, set "feasible" to false.
 
 Output JSON schema:
 {{
   "feasible": true,
   "reason": "only if feasible=false — explain why",
+  "target_repo": "KlimDos/my-blog or eblooo/moto-news",
   "branch_name": "feature/short-description",
   "pr_title": "Short PR title",
   "pr_body": "Markdown description of what was changed and why",
   "files": [
     {{
       "path": "relative/path/to/file",
-      "content": "full file content"
+      "content": "full file content as a string"
     }}
   ]
 }}"""),
@@ -292,29 +319,32 @@ Title: {discussion_title}
 Body:
 {discussion_body}
 
-=== Target Repository: {target_repo} ===
+=== Source code from both repositories ===
 
 {source_context}
 
 === Instructions ===
-Analyze the suggestion and generate the code changes needed to implement it in the repository {target_repo}.
-Output ONLY a JSON object following the schema above. No other text."""),
+Analyze the suggestion and decide which repository to target:
+- Blog/frontend improvements → KlimDos/my-blog
+- Aggregator/agent improvements → eblooo/moto-news
+
+Set "target_repo" in your JSON output accordingly.
+Output ONLY a JSON object. The "content" field must be a string, not a nested object."""),
 ])
 
 
 def generate_changes(
     config,
     discussion: dict,
-    target_repo: str,
     source_context: str,
 ) -> dict:
     """Ask the LLM to generate code changes for the discussion suggestion.
 
+    The LLM decides which repo to target (blog vs aggregator).
     Includes timing and detailed logging.
     """
     log.info("admin.llm_generate",
              discussion=discussion["number"],
-             target_repo=target_repo,
              provider=config.llm.provider,
              model=config.llm.admin_model)
 
@@ -327,7 +357,6 @@ def generate_changes(
     result_text = chain.invoke({
         "discussion_title": discussion["title"],
         "discussion_body": discussion["body"] or "(no body)",
-        "target_repo": target_repo,
         "source_context": source_context,
     })
 
@@ -337,7 +366,8 @@ def generate_changes(
              elapsed_seconds=elapsed)
     log.debug("admin.llm_generate.raw", raw=result_text[:1000])
 
-    return _parse_changes_json(result_text)
+    parsed = _parse_changes_json(result_text)
+    return _validate_changes(parsed)
 
 
 def _parse_changes_json(text: str) -> dict:
@@ -374,6 +404,41 @@ def _parse_changes_json(text: str) -> dict:
             pass
 
     raise ValueError(f"Could not parse LLM response as JSON. First 500 chars: {text[:500]}")
+
+
+def _validate_changes(changes: dict) -> dict:
+    """Validate and sanitize parsed LLM changes.
+
+    Fixes common LLM mistakes:
+    - content field as dict/list instead of string
+    - missing fields
+    """
+    # Validate files
+    files = changes.get("files", [])
+    valid_files = []
+    for f in files:
+        path = f.get("path", "")
+        content = f.get("content", "")
+
+        if not path:
+            log.warning("admin.validate.skip_no_path")
+            continue
+
+        # If content is not a string, convert it
+        if isinstance(content, (dict, list)):
+            log.warning("admin.validate.content_not_string",
+                        path=path, content_type=type(content).__name__)
+            content = json.dumps(content, indent=2, ensure_ascii=False)
+
+        if not isinstance(content, str):
+            log.warning("admin.validate.skip_bad_content",
+                        path=path, content_type=type(content).__name__)
+            continue
+
+        valid_files.append({"path": path, "content": content})
+
+    changes["files"] = valid_files
+    return changes
 
 
 def _sanitize_json_string(json_str: str) -> str:
@@ -468,7 +533,7 @@ def comment_on_discussion(repo: str, discussion_number: int, pr_url: str) -> Non
 # Main pipeline
 # ---------------------------------------------------------------------------
 
-TARGET_REPO = "eblooo/moto-news"
+DEFAULT_TARGET_REPO = "eblooo/moto-news"
 
 
 def _token_for_repo(repo: str) -> Optional[str]:
@@ -507,17 +572,13 @@ def process_discussion(
         log.info("admin.process.skip_already_processed", discussion=number)
         return None
 
-    target_repo = TARGET_REPO
-    log.info("admin.process.target_repo", discussion=number, repo=target_repo)
-
-    # Fetch source context (with retries)
+    # Fetch source context from BOTH repos (with retries)
     source_context = None
     for attempt in range(1, 4):
         try:
             log.info("admin.process.fetch_context",
                      discussion=number, attempt=attempt)
             source_context = fetch_context_for_discussion(
-                target_repo=target_repo,
                 discussion_title=title,
                 discussion_body=discussion.get("body", ""),
             )
@@ -547,7 +608,7 @@ def process_discussion(
                      discussion=number,
                      attempt=attempt,
                      max_retries=MAX_RETRIES)
-            changes = generate_changes(config, discussion, target_repo, source_context)
+            changes = generate_changes(config, discussion, source_context)
             break
         except Exception as e:
             last_error = e
@@ -581,8 +642,22 @@ def process_discussion(
                  discussion=number, reason=reason, elapsed_seconds=elapsed)
         return None
 
+    # Extract target repo from LLM output (fallback to aggregator)
+    target_repo = changes.get("target_repo", DEFAULT_TARGET_REPO)
+    # Validate: must be one of the known repos
+    valid_repos = set(REPOS.values())
+    if target_repo not in valid_repos:
+        log.warning("admin.process.unknown_target_repo",
+                     discussion=number, target_repo=target_repo,
+                     fallback=DEFAULT_TARGET_REPO)
+        target_repo = DEFAULT_TARGET_REPO
+    log.info("admin.process.target_repo", discussion=number, repo=target_repo)
+
     files = changes.get("files", [])
-    branch = changes.get("branch_name", f"feature/discussion-{number}")
+    # Add timestamp suffix to avoid conflicts with stale branches from prior runs
+    ts = datetime.now().strftime("%m%d%H%M")
+    raw_branch = changes.get("branch_name", f"feature/discussion-{number}")
+    branch = f"{raw_branch}-{ts}"
     pr_title = changes.get("pr_title", f"Implement: {title[:60]}")
     pr_body = changes.get("pr_body", f"Implements suggestion from discussion #{number}")
 
@@ -592,6 +667,7 @@ def process_discussion(
 
     log.info("admin.process.changes_ready",
              discussion=number,
+             target_repo=target_repo,
              branch=branch,
              file_count=len(files),
              files=[f["path"] for f in files])
@@ -599,7 +675,8 @@ def process_discussion(
     if dry_run:
         elapsed = round(time.monotonic() - start_time, 1)
         log.info("admin.process.dry_run_skip",
-                 discussion=number, elapsed_seconds=elapsed)
+                 discussion=number, target_repo=target_repo,
+                 elapsed_seconds=elapsed)
         for f in files:
             log.info("admin.dry_run.file",
                      path=f["path"],
@@ -611,7 +688,8 @@ def process_discussion(
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             log.info("admin.process.creating_pr",
-                     discussion=number, attempt=attempt, branch=branch)
+                     discussion=number, attempt=attempt,
+                     branch=branch, target_repo=target_repo)
             repo_token = _token_for_repo(target_repo)
             pr = apply_changes_as_pr(
                 repo=target_repo,
