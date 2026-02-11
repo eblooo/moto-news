@@ -20,8 +20,12 @@ class LLMConfig:
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     user_model: str = "meta-llama/llama-3.3-70b-instruct:free"
-    coder_model: str = "meta-llama/llama-3.3-70b-instruct:free"
-    admin_model: str = "meta-llama/llama-3.3-70b-instruct:free"
+    coder_model: str = "google/gemma-3-27b-it:free"
+    admin_model: str = "nousresearch/hermes-3-llama-3.1-405b:free"
+    # Paid fallbacks — used automatically when free model returns 429
+    user_model_paid: str = "meta-llama/llama-3.3-70b-instruct"
+    coder_model_paid: str = "google/gemma-3-27b-it"
+    admin_model_paid: str = "meta-llama/llama-3.3-70b-instruct"
     temperature: float = 0.35
 
 
@@ -116,6 +120,9 @@ def load_config(config_path: Optional[str] = None) -> AgentConfig:
 def create_llm(config: AgentConfig, role: str = "user"):
     """Create an LLM instance based on config.llm.provider.
 
+    For OpenRouter: returns free model with automatic paid fallback on 429.
+    Uses LangChain's .with_fallbacks() so the switch is transparent to callers.
+
     Args:
         config: Loaded agent config.
         role:   "user"  picks config.llm.user_model,
@@ -123,23 +130,40 @@ def create_llm(config: AgentConfig, role: str = "user"):
                 "admin" picks config.llm.admin_model.
 
     Returns:
-        A LangChain BaseChatModel instance (ChatOpenAI or ChatOllama).
+        A LangChain BaseChatModel instance (possibly with fallbacks).
     """
     if config.llm.provider == "openrouter":
         from langchain_openai import ChatOpenAI
 
-        model_map = {
+        free_map = {
             "user": config.llm.user_model,
             "coder": config.llm.coder_model,
             "admin": config.llm.admin_model,
         }
-        model = model_map.get(role, config.llm.user_model)
-        return ChatOpenAI(
-            model=model,
+        paid_map = {
+            "user": config.llm.user_model_paid,
+            "coder": config.llm.coder_model_paid,
+            "admin": config.llm.admin_model_paid,
+        }
+
+        free_model = free_map.get(role, config.llm.user_model)
+        paid_model = paid_map.get(role, config.llm.user_model_paid)
+
+        common = dict(
             api_key=config.llm.openrouter_api_key,
             base_url=config.llm.openrouter_base_url,
             temperature=config.llm.temperature,
         )
+
+        primary = ChatOpenAI(model=free_model, **common)
+
+        # If free and paid are the same model (no :free suffix), skip fallback
+        if free_model == paid_model or not paid_model:
+            return primary
+
+        fallback = ChatOpenAI(model=paid_model, **common)
+        return primary.with_fallbacks([fallback])
+
     else:
         # Fallback to Ollama
         from langchain_ollama import ChatOllama
