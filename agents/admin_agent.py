@@ -41,6 +41,7 @@ from tools.github_pr import apply_changes_as_pr, get_file_content
 log = structlog.get_logger()
 
 BOT_MARKER = "<!-- admin-agent-pr -->"
+LABEL_PR_CREATED = "pr_created"
 MAX_RETRIES = 3
 RETRY_DELAY_SECONDS = 15
 
@@ -111,12 +112,121 @@ def fetch_implement_discussions(repo: str) -> list[dict]:
 
 
 def is_already_processed(discussion: dict) -> bool:
-    """Check if the bot already commented with a PR link on this discussion."""
+    """Check if the discussion already has 'pr_created' label or bot comment marker."""
+    # Check labels first (faster, more reliable)
+    labels = [l["name"].lower()
+              for l in discussion.get("labels", {}).get("nodes", [])]
+    if LABEL_PR_CREATED in labels:
+        return True
+
+    # Fallback: check for bot comment marker
     comments = discussion.get("comments", {}).get("nodes", [])
     for c in comments:
         if BOT_MARKER in (c.get("body") or ""):
             return True
     return False
+
+
+def _get_label_id(repo: str, label_name: str) -> Optional[str]:
+    """Get the node ID of a label by name. Returns None if not found."""
+    owner, name = repo.split("/")
+    query = """
+    query($owner: String!, $name: String!, $label: String!) {
+      repository(owner: $owner, name: $name) {
+        label(name: $label) { id }
+      }
+    }
+    """
+    try:
+        data = _graphql_query(query, {
+            "owner": owner, "name": name, "label": label_name,
+        })
+        label = data["repository"].get("label")
+        if label:
+            return label["id"]
+        log.warning("admin.label.not_found",
+                    repo=repo, label=label_name)
+        return None
+    except Exception as e:
+        log.warning("admin.label.fetch_error",
+                    repo=repo, label=label_name, error=str(e))
+        return None
+
+
+def add_label_to_discussion(
+    repo: str,
+    discussion_id: str,
+    label_name: str = LABEL_PR_CREATED,
+) -> bool:
+    """Add a label to a discussion. Returns True on success.
+
+    The label must already exist in the repo. Creates it via REST if missing.
+    """
+    label_id = _get_label_id(repo, label_name)
+
+    # Auto-create label if it doesn't exist
+    if not label_id:
+        label_id = _create_label(repo, label_name)
+    if not label_id:
+        return False
+
+    mutation = """
+    mutation($labelableId: ID!, $labelIds: [ID!]!) {
+      addLabelsToLabelable(input: {labelableId: $labelableId, labelIds: $labelIds}) {
+        clientMutationId
+      }
+    }
+    """
+    try:
+        _graphql_query(mutation, {
+            "labelableId": discussion_id,
+            "labelIds": [label_id],
+        })
+        log.info("admin.label.added",
+                 repo=repo, label=label_name, discussion_id=discussion_id[:12])
+        return True
+    except Exception as e:
+        log.warning("admin.label.add_failed",
+                    repo=repo, label=label_name, error=str(e))
+        return False
+
+
+def _create_label(repo: str, label_name: str) -> Optional[str]:
+    """Create a label in the repo via REST API. Returns the label node ID."""
+    import httpx
+    token = os.getenv("GITHUB_TOKEN", "")
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github.v3+json",
+    }
+    try:
+        r = httpx.post(
+            f"https://api.github.com/repos/{repo}/labels",
+            headers=headers,
+            json={
+                "name": label_name,
+                "color": "0e8a16",  # green
+                "description": "PR created by admin-agent",
+            },
+            timeout=30,
+        )
+        if r.status_code in (201, 200):
+            log.info("admin.label.created", repo=repo, label=label_name)
+            # Fetch the node_id via GraphQL now
+            return _get_label_id(repo, label_name)
+        elif r.status_code == 422:
+            # Label already exists (race condition) — just fetch its ID
+            log.info("admin.label.already_exists", repo=repo, label=label_name)
+            return _get_label_id(repo, label_name)
+        else:
+            log.warning("admin.label.create_failed",
+                        repo=repo, label=label_name,
+                        status=r.status_code, body=r.text[:200])
+            return None
+    except Exception as e:
+        log.warning("admin.label.create_error",
+                    repo=repo, label=label_name, error=str(e))
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -712,6 +822,10 @@ def process_discussion(
             # Comment on the discussion with PR link
             discussion_repo = config.github.repo
             comment_on_discussion(discussion_repo, number, pr_url)
+
+            # Add "pr_created" label to mark discussion as processed
+            add_label_to_discussion(
+                discussion_repo, discussion["id"], LABEL_PR_CREATED)
 
             return pr_url
 

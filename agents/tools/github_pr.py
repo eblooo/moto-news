@@ -56,13 +56,20 @@ def get_default_branch(repo: str, token: Optional[str] = None) -> tuple[str, str
 
 def create_branch(repo: str, branch_name: str, from_sha: str,
                   token: Optional[str] = None) -> None:
-    """Create a new branch from the given SHA."""
+    """Create a new branch from the given SHA.
+
+    Gracefully handles the case where the branch already exists (422).
+    """
     r = httpx.post(
         f"{GITHUB_API}/repos/{repo}/git/refs",
         headers=_headers(token),
         json={"ref": f"refs/heads/{branch_name}", "sha": from_sha},
         timeout=30,
     )
+    if r.status_code == 422:
+        # Branch already exists (e.g. from a previous attempt) — that's fine
+        log.info("github_pr.branch_already_exists", repo=repo, branch=branch_name)
+        return
     r.raise_for_status()
     log.info("github_pr.branch_created", repo=repo, branch=branch_name)
 
