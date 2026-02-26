@@ -51,6 +51,7 @@ func (s *Server) Run() error {
 	fmt.Println("  POST /api/push        - Push changes to blog repository")
 	fmt.Println("  GET  /api/stats       - Database statistics")
 	fmt.Println("  GET  /api/articles    - List recent articles (?limit=20)")
+	fmt.Println("  GET  /api/articles/recently-translated - Last translated articles (?limit=10)")
 	fmt.Println("  GET  /api/article/:id - Get single article by ID")
 	return s.router.Run(addr)
 }
@@ -70,6 +71,7 @@ func (s *Server) setupRoutes() {
 		// Queries
 		api.GET("/stats", s.handleStats)
 		api.GET("/articles", s.handleArticles)
+		api.GET("/articles/recently-translated", s.handleRecentlyTranslated)
 		api.GET("/article/:id", s.handleArticle)
 	}
 
@@ -113,9 +115,13 @@ func (s *Server) handleTranslate(c *gin.Context) {
 		return
 	}
 
+	msg := fmt.Sprintf("Translated %d of %d articles", result.Translated, result.Total)
+	if result.PublishedThisBatch > 0 {
+		msg += fmt.Sprintf(", published %d to blog", result.PublishedThisBatch)
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
-		"message": fmt.Sprintf("Translated %d of %d articles", result.Translated, result.Total),
+		"message": msg,
 		"data":    result,
 	})
 }
@@ -137,9 +143,13 @@ func (s *Server) handlePublish(c *gin.Context) {
 		return
 	}
 
+	msg := fmt.Sprintf("Published %d of %d articles", result.Published, result.Total)
+	if result.Total == 0 {
+		msg = "No articles to publish (0 pending). Translated articles are published automatically in the Translate step."
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
-		"message": fmt.Sprintf("Published %d of %d articles", result.Published, result.Total),
+		"message": msg,
 		"data":    result,
 	})
 }
@@ -243,6 +253,31 @@ func (s *Server) handleArticles(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
+		"data":    articles,
+		"count":   len(articles),
+	})
+}
+
+func (s *Server) handleRecentlyTranslated(c *gin.Context) {
+	limit := 10
+	if l := c.Query("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 100 {
+			limit = parsed
+		}
+	}
+
+	articles, err := s.store.GetRecentlyTranslatedArticles(limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": fmt.Sprintf("Last %d translated articles (newest first)", len(articles)),
 		"data":    articles,
 		"count":   len(articles),
 	})

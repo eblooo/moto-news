@@ -203,6 +203,20 @@ func (s *SQLiteStorage) GetRecentArticles(limit int) ([]*models.Article, error) 
 	return s.scanArticles(query, limit)
 }
 
+// GetRecentlyTranslatedArticles returns articles translated most recently (by translated_at DESC)
+func (s *SQLiteStorage) GetRecentlyTranslatedArticles(limit int) ([]*models.Article, error) {
+	query := `
+	SELECT id, source_url, source_site, title, title_ru, description, content, content_ru,
+		author, category, tags, image_url, published_at, fetched_at, translated_at,
+		published_to_mkdocs, slug
+	FROM articles 
+	WHERE translated_at IS NOT NULL AND content_ru != ''
+	ORDER BY translated_at DESC
+	LIMIT ?
+	`
+	return s.scanArticles(query, limit)
+}
+
 // GetArticlesWithEmptyContent returns articles where content is empty or too short (scraping failed/incomplete).
 // Limited to 500 rows to avoid unbounded memory usage.
 func (s *SQLiteStorage) GetArticlesWithEmptyContent() ([]*models.Article, error) {

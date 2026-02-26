@@ -22,24 +22,36 @@ type Result struct {
 
 // FetchResult holds fetch operation results
 type FetchResult struct {
-	NewArticles     int `json:"new_articles"`
-	SkippedArticles int `json:"skipped_articles"`
-	Errors          int `json:"errors"`
+	NewArticles     int      `json:"new_articles"`
+	SkippedArticles int      `json:"skipped_articles"`
+	Errors          int      `json:"errors"`
+	Log             []string `json:"log,omitempty"` // per-item progress for API/detailed logs
+}
+
+// TranslatedArticleSummary is one article translated in this batch (for API response)
+type TranslatedArticleSummary struct {
+	ID      int64  `json:"id"`
+	Title   string `json:"title"`    // original (EN)
+	TitleRU string `json:"title_ru"`  // translated title
 }
 
 // TranslateResult holds translate operation results
 type TranslateResult struct {
-	Translated int    `json:"translated"`
-	Total      int    `json:"total"`
-	Errors     int    `json:"errors"`
-	LastError  string `json:"last_error,omitempty"` // last error message when errors > 0 (for debugging)
+	Translated         int                      `json:"translated"`
+	Total              int                      `json:"total"`
+	Errors             int                      `json:"errors"`
+	LastError          string                   `json:"last_error,omitempty"`
+	PublishedThisBatch int                      `json:"published_this_batch,omitempty"`
+	TranslatedArticles []TranslatedArticleSummary `json:"translated_articles,omitempty"` // list of articles translated in this run
+	Log                []string                 `json:"log,omitempty"`
 }
 
 // PublishResult holds publish operation results
 type PublishResult struct {
-	Published int `json:"published"`
-	Total     int `json:"total"`
-	Errors    int `json:"errors"`
+	Published int      `json:"published"`
+	Total     int      `json:"total"`
+	Errors    int      `json:"errors"`
+	Log       []string `json:"log,omitempty"`
 }
 
 // RescrapeResult holds rescrape operation results
@@ -84,24 +96,28 @@ func (s *Service) Fetch() (*FetchResult, error) {
 	rssFetcher := fetcher.NewRSSFetcher()
 	scraper := fetcher.NewArticleScraper()
 
-	result := &FetchResult{}
+	result := &FetchResult{Log: []string{}}
 
 	for _, source := range s.cfg.Sources {
 		if !source.Enabled {
 			continue
 		}
 
+		result.Log = append(result.Log, "source: "+source.Name)
 		articles, err := rssFetcher.FetchMultipleFeeds(source.Feeds, source.Name)
 		if err != nil {
+			result.Log = append(result.Log, fmt.Sprintf("  ERROR: %v", err))
 			fmt.Printf("Warning: error fetching %s: %v\n", source.Name, err)
 			result.Errors++
 			continue
 		}
 
+		result.Log = append(result.Log, fmt.Sprintf("  found %d articles", len(articles)))
 		fmt.Printf("Found %d articles in feed\n", len(articles))
 		for i, article := range articles {
 			exists, err := s.store.ArticleExists(article.SourceURL)
 			if err != nil {
+				result.Log = append(result.Log, fmt.Sprintf("  [%d/%d] error check: %v", i+1, len(articles), err))
 				fmt.Printf("  ✗ Error checking article: %v\n", err)
 				result.Errors++
 				continue
@@ -109,6 +125,7 @@ func (s *Service) Fetch() (*FetchResult, error) {
 
 			if exists {
 				result.SkippedArticles++
+				result.Log = append(result.Log, fmt.Sprintf("  [%d/%d] skipped: %s", i+1, len(articles), article.Title))
 				continue
 			}
 
@@ -118,18 +135,21 @@ func (s *Service) Fetch() (*FetchResult, error) {
 			}
 
 			if err := s.store.InsertArticle(article); err != nil {
+				result.Log = append(result.Log, fmt.Sprintf("  [%d/%d] error save: %v", i+1, len(articles), err))
 				fmt.Printf("    ✗ Error saving article: %v\n", err)
 				result.Errors++
 				continue
 			}
 
 			result.NewArticles++
+			result.Log = append(result.Log, fmt.Sprintf("  [%d/%d] saved: %s", i+1, len(articles), article.Title))
 			fmt.Printf("    ✓ Saved\n")
 
 			time.Sleep(1 * time.Second)
 		}
 	}
 
+	result.Log = append(result.Log, fmt.Sprintf("done: new=%d skipped=%d errors=%d", result.NewArticles, result.SkippedArticles, result.Errors))
 	fmt.Printf("\nDone! New: %d, Skipped: %d, Errors: %d\n", result.NewArticles, result.SkippedArticles, result.Errors)
 
 	return result, nil
@@ -144,6 +164,7 @@ func (s *Service) Translate(limit int) (*TranslateResult, error) {
 
 	result := &TranslateResult{
 		Total: len(articles),
+		Log:   []string{},
 	}
 
 	if len(articles) == 0 {
@@ -155,6 +176,8 @@ func (s *Service) Translate(limit int) (*TranslateResult, error) {
 		return nil, err
 	}
 
+	result.Log = append(result.Log, "translator: "+trans.Name())
+	result.Log = append(result.Log, fmt.Sprintf("articles to translate: %d", len(articles)))
 	fmt.Printf("Using translator: %s\n", trans.Name())
 	fmt.Printf("Articles to translate: %d\n\n", len(articles))
 
@@ -163,16 +186,20 @@ func (s *Service) Translate(limit int) (*TranslateResult, error) {
 
 	// Collect translated articles for batch publish
 	var translatedArticles []*models.Article
+	n := len(articles)
 
 	for i, article := range articles {
 		articleStart := time.Now()
-		fmt.Printf("[%d/%d] Translating: %s\n", i+1, len(articles), article.Title)
+		line := fmt.Sprintf("[%d/%d] %s", i+1, n, article.Title)
+		result.Log = append(result.Log, line)
+		fmt.Printf("[%d/%d] Translating: %s\n", i+1, n, article.Title)
 
 		titleRU, err := trans.TranslateTitle(ctx, article.Title)
 		if err != nil {
-			fmt.Printf("  ✗ Error translating title: %v\n", err)
+			result.Log = append(result.Log, fmt.Sprintf("[%d/%d] ERROR (title): %s", i+1, n, err.Error()))
 			result.Errors++
 			result.LastError = err.Error()
+			fmt.Printf("  ✗ Error translating title: %v\n", err)
 			continue
 		}
 		article.TitleRU = titleRU
@@ -180,9 +207,10 @@ func (s *Service) Translate(limit int) (*TranslateResult, error) {
 		if article.Content != "" {
 			contentRU, err := trans.Translate(ctx, article.Content)
 			if err != nil {
-				fmt.Printf("  ✗ Error translating content: %v\n", err)
+				result.Log = append(result.Log, fmt.Sprintf("[%d/%d] ERROR (content): %s", i+1, n, err.Error()))
 				result.Errors++
 				result.LastError = err.Error()
+				fmt.Printf("  ✗ Error translating content: %v\n", err)
 				continue
 			}
 			article.ContentRU = contentRU
@@ -192,30 +220,38 @@ func (s *Service) Translate(limit int) (*TranslateResult, error) {
 		article.TranslatedAt = &now
 
 		if err := s.store.UpdateArticle(article); err != nil {
-			fmt.Printf("  ✗ Error saving translation: %v\n", err)
+			result.Log = append(result.Log, fmt.Sprintf("[%d/%d] ERROR (save): %s", i+1, n, err.Error()))
 			result.Errors++
 			result.LastError = err.Error()
+			fmt.Printf("  ✗ Error saving translation: %v\n", err)
 			continue
 		}
 
 		elapsed := time.Since(articleStart).Round(time.Second)
 		result.Translated++
+		result.TranslatedArticles = append(result.TranslatedArticles, TranslatedArticleSummary{
+			ID: article.ID, Title: article.Title, TitleRU: article.TitleRU,
+		})
+		okLine := fmt.Sprintf("[%d/%d] OK: %s (%s)", i+1, n, article.TitleRU, elapsed)
+		result.Log = append(result.Log, okLine)
 		fmt.Printf("  ✓ Перевод: %s (%s)\n", article.TitleRU, elapsed)
 
 		translatedArticles = append(translatedArticles, article)
 	}
 
 	totalElapsed := time.Since(totalStart).Round(time.Second)
+	result.Log = append(result.Log, fmt.Sprintf("done: %d translated, %d errors, total time %s", result.Translated, result.Errors, totalElapsed))
 	fmt.Printf("\nTranslated %d of %d articles (errors: %d) in %s\n",
 		result.Translated, result.Total, result.Errors, totalElapsed)
 
-	// Publish all translated articles
+	// Publish all translated articles (same request — so "Publish" step later will see 0 pending)
 	if len(translatedArticles) > 0 {
 		ghPub := publisher.NewGitHubPublisher(&s.cfg.Hugo)
 		if ghPub.IsAvailable() {
-			// Batch push via GitHub API (single commit)
+			result.Log = append(result.Log, "publish (GitHub API): starting")
 			fmt.Printf("\nPublishing %d articles via GitHub API...\n", len(translatedArticles))
 			if err := ghPub.PublishMultiple(translatedArticles); err != nil {
+				result.Log = append(result.Log, fmt.Sprintf("publish ERROR: %v", err))
 				fmt.Printf("  ✗ GitHub publish error: %v\n", err)
 			} else {
 				for _, a := range translatedArticles {
@@ -224,24 +260,29 @@ func (s *Service) Translate(limit int) (*TranslateResult, error) {
 						fmt.Printf("  ✗ Error updating article status (id=%d): %v\n", a.ID, err)
 					}
 				}
+				result.PublishedThisBatch = len(translatedArticles)
+				result.Log = append(result.Log, fmt.Sprintf("publish: %d articles pushed to GitHub", len(translatedArticles)))
 				fmt.Printf("  ✓ Published %d articles to GitHub\n", len(translatedArticles))
 			}
 		} else {
-			// Fallback to local file + git
+			result.Log = append(result.Log, "publish (local git): starting")
 			fmt.Println("\nGITHUB_TOKEN not set, using local git publisher...")
 			pub := publisher.NewHugoPublisher(&s.cfg.Hugo)
 			published := 0
 			for _, article := range translatedArticles {
-			if err := pub.Publish(article); err != nil {
-				fmt.Printf("  ✗ Error publishing: %v\n", err)
-			} else {
-				article.PublishedToHugo = true
-				if err := s.store.UpdateArticle(article); err != nil {
-					fmt.Printf("  ✗ Error updating article status (id=%d): %v\n", article.ID, err)
+				if err := pub.Publish(article); err != nil {
+					result.Log = append(result.Log, fmt.Sprintf("publish ERROR: %v", err))
+					fmt.Printf("  ✗ Error publishing: %v\n", err)
+				} else {
+					article.PublishedToHugo = true
+					if err := s.store.UpdateArticle(article); err != nil {
+						fmt.Printf("  ✗ Error updating article status (id=%d): %v\n", article.ID, err)
+					}
+					published++
 				}
-				published++
 			}
-			}
+			result.PublishedThisBatch = published
+			result.Log = append(result.Log, fmt.Sprintf("publish: %d articles written (local git)", published))
 			if s.cfg.Hugo.AutoCommit && published > 0 {
 				if err := pub.GitCommit(fmt.Sprintf("Add %d new articles", published)); err != nil {
 					fmt.Printf("Warning: git commit failed: %v\n", err)
@@ -262,19 +303,24 @@ func (s *Service) Publish(limit int) (*PublishResult, error) {
 
 	result := &PublishResult{
 		Total: len(articles),
+		Log:   []string{},
 	}
 
 	if len(articles) == 0 {
+		result.Log = append(result.Log, "No articles pending publish.")
+		result.Log = append(result.Log, "Translated articles are published automatically in the Translate step, so Publish often sees 0 when the pipeline runs translate then publish in sequence.")
 		return result, nil
 	}
 
+	result.Log = append(result.Log, fmt.Sprintf("articles to publish: %d", len(articles)))
 	fmt.Printf("Articles to publish: %d\n\n", len(articles))
 
 	ghPub := publisher.NewGitHubPublisher(&s.cfg.Hugo)
 	if ghPub.IsAvailable() {
-		// Batch push via GitHub API
+		result.Log = append(result.Log, "method: GitHub API")
 		fmt.Println("Publishing via GitHub API...")
 		if err := ghPub.PublishMultiple(articles); err != nil {
+			result.Log = append(result.Log, fmt.Sprintf("ERROR: %v", err))
 			fmt.Printf("  ✗ GitHub publish error: %v\n", err)
 			result.Errors = len(articles)
 			return result, nil
@@ -282,21 +328,25 @@ func (s *Service) Publish(limit int) (*PublishResult, error) {
 		for _, a := range articles {
 			a.PublishedToHugo = true
 			if err := s.store.UpdateArticle(a); err != nil {
+				result.Log = append(result.Log, fmt.Sprintf("  id=%d error: %v", a.ID, err))
 				fmt.Printf("  ✗ Error updating article status (id=%d): %v\n", a.ID, err)
 				result.Errors++
 				continue
 			}
 			result.Published++
+			result.Log = append(result.Log, fmt.Sprintf("  published: %s", a.TitleRU))
 		}
+		result.Log = append(result.Log, fmt.Sprintf("done: %d published", result.Published))
 		fmt.Printf("  ✓ Published %d articles to GitHub\n", result.Published)
 	} else {
-		// Fallback to local git
+		result.Log = append(result.Log, "method: local git")
 		fmt.Println("GITHUB_TOKEN not set, using local git publisher...")
 		pub := publisher.NewHugoPublisher(&s.cfg.Hugo)
 
 		for i, article := range articles {
 			fmt.Printf("[%d/%d] Publishing: %s\n", i+1, len(articles), article.TitleRU)
 			if err := pub.Publish(article); err != nil {
+				result.Log = append(result.Log, fmt.Sprintf("[%d/%d] ERROR: %v", i+1, len(articles), err))
 				fmt.Printf("  ✗ Error: %v\n", err)
 				result.Errors++
 				continue
@@ -304,14 +354,17 @@ func (s *Service) Publish(limit int) (*PublishResult, error) {
 
 			article.PublishedToHugo = true
 			if err := s.store.UpdateArticle(article); err != nil {
+				result.Log = append(result.Log, fmt.Sprintf("[%d/%d] error update: %v", i+1, len(articles), err))
 				fmt.Printf("  ✗ Error updating status: %v\n", err)
 				result.Errors++
 				continue
 			}
 
 			result.Published++
+			result.Log = append(result.Log, fmt.Sprintf("[%d/%d] OK: %s", i+1, len(articles), article.TitleRU))
 			fmt.Printf("  ✓ Published\n")
 		}
+		result.Log = append(result.Log, fmt.Sprintf("done: %d published, %d errors", result.Published, result.Errors))
 
 		if s.cfg.Hugo.AutoCommit && result.Published > 0 {
 			if err := pub.GitCommit(fmt.Sprintf("Add %d new articles", result.Published)); err != nil {
