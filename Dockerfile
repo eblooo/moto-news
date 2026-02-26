@@ -13,8 +13,8 @@ RUN go mod download
 # Copy source code
 COPY . .
 
-# Build with CGO enabled for SQLite
-RUN CGO_ENABLED=1 GOOS=linux go build -a -ldflags '-linkmode external -extldflags "-static"' -o /aggregator ./cmd/aggregator/
+# Build with CGO enabled for SQLite (dynamic link; runtime image has libs)
+RUN CGO_ENABLED=1 GOOS=linux go build -a -o /aggregator ./cmd/aggregator/
 
 # ===== Stage 2: Runtime =====
 FROM alpine:3.20

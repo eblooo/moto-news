@@ -29,9 +29,10 @@ type FetchResult struct {
 
 // TranslateResult holds translate operation results
 type TranslateResult struct {
-	Translated int `json:"translated"`
-	Total      int `json:"total"`
-	Errors     int `json:"errors"`
+	Translated int    `json:"translated"`
+	Total      int    `json:"total"`
+	Errors     int    `json:"errors"`
+	LastError  string `json:"last_error,omitempty"` // last error message when errors > 0 (for debugging)
 }
 
 // PublishResult holds publish operation results
@@ -171,6 +172,7 @@ func (s *Service) Translate(limit int) (*TranslateResult, error) {
 		if err != nil {
 			fmt.Printf("  ✗ Error translating title: %v\n", err)
 			result.Errors++
+			result.LastError = err.Error()
 			continue
 		}
 		article.TitleRU = titleRU
@@ -180,6 +182,7 @@ func (s *Service) Translate(limit int) (*TranslateResult, error) {
 			if err != nil {
 				fmt.Printf("  ✗ Error translating content: %v\n", err)
 				result.Errors++
+				result.LastError = err.Error()
 				continue
 			}
 			article.ContentRU = contentRU
@@ -191,6 +194,7 @@ func (s *Service) Translate(limit int) (*TranslateResult, error) {
 		if err := s.store.UpdateArticle(article); err != nil {
 			fmt.Printf("  ✗ Error saving translation: %v\n", err)
 			result.Errors++
+			result.LastError = err.Error()
 			continue
 		}
 
@@ -457,6 +461,15 @@ func (s *Service) createTranslator() (translator.Translator, error) {
 		), nil
 	case "libretranslate":
 		return translator.NewLibreTranslateTranslator(s.cfg.Translator.LibreTranslate.Host), nil
+	case "openrouter":
+		return translator.NewOpenRouterTranslator(
+			s.cfg.Translator.OpenRouter.BaseURL,
+			s.cfg.Translator.OpenRouter.Model,
+			s.cfg.Translator.OpenRouter.APIKey,
+			s.cfg.Translator.OpenRouter.Prompt,
+			s.cfg.Translator.OpenRouter.TitlePrompt,
+			s.cfg.Translator.OpenRouter.Temperature,
+		), nil
 	default:
 		return nil, fmt.Errorf("unknown translator provider: %s", s.cfg.Translator.Provider)
 	}

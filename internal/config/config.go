@@ -28,6 +28,16 @@ type TranslatorConfig struct {
 	Ollama         OllamaConfig         `mapstructure:"ollama"`
 	DeepL          DeepLConfig          `mapstructure:"deepl"`
 	LibreTranslate LibreTranslateConfig `mapstructure:"libretranslate"`
+	OpenRouter     OpenRouterConfig     `mapstructure:"openrouter"`
+}
+
+type OpenRouterConfig struct {
+	Model        string  `mapstructure:"model"`
+	APIKey       string  `mapstructure:"api_key"`
+	BaseURL      string  `mapstructure:"base_url"`
+	Prompt       string  `mapstructure:"prompt"`
+	TitlePrompt  string  `mapstructure:"title_prompt"`
+	Temperature  float64 `mapstructure:"temperature"`
 }
 
 type OllamaConfig struct {
@@ -91,6 +101,8 @@ func Load(configPath string) (*Config, error) {
 	viper.SetDefault("translator.ollama.num_ctx", 8192)
 	viper.SetDefault("translator.deepl.free", true)
 	viper.SetDefault("translator.libretranslate.host", "http://localhost:5000")
+	viper.SetDefault("translator.openrouter.base_url", "https://openrouter.ai/api/v1")
+	viper.SetDefault("translator.openrouter.temperature", 0.3)
 	viper.SetDefault("hugo.path", "./blog")
 	viper.SetDefault("hugo.content_dir", "content")
 	viper.SetDefault("hugo.auto_commit", true)
