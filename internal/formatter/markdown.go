@@ -56,12 +56,23 @@ func (f *MarkdownFormatter) Format(article *models.Article) string {
 		sb.WriteString(fmt.Sprintf("author: %s\n", yamlQuote(article.Author)))
 	}
 
-	// Cover image
-	if article.ImageURL != "" {
+	// Cover image (first of ImageURLs or legacy ImageURL)
+	coverURL := article.ImageURL
+	if coverURL == "" && len(article.ImageURLs) > 0 {
+		coverURL = article.ImageURLs[0]
+	}
+	if coverURL != "" {
 		sb.WriteString("cover:\n")
-		sb.WriteString(fmt.Sprintf("  image: %s\n", yamlQuote(article.ImageURL)))
+		sb.WriteString(fmt.Sprintf("  image: %s\n", yamlQuote(coverURL)))
 		sb.WriteString(fmt.Sprintf("  alt: %s\n", yamlQuote(title)))
 		sb.WriteString("  hidden: false\n")
+	}
+	// Additional images (gallery) — first is already in cover
+	if len(article.ImageURLs) > 1 {
+		sb.WriteString("images:\n")
+		for _, u := range article.ImageURLs[1:] {
+			sb.WriteString(fmt.Sprintf("  - %s\n", yamlQuote(u)))
+		}
 	}
 
 	sb.WriteString("---\n\n")

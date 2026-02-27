@@ -54,8 +54,12 @@ func (s *SQLiteStorage) migrate() error {
 	CREATE INDEX IF NOT EXISTS idx_articles_published ON articles(published_to_mkdocs);
 	CREATE INDEX IF NOT EXISTS idx_articles_fetched ON articles(fetched_at);
 	`
-	_, err := s.db.Exec(query)
-	return err
+	if _, err := s.db.Exec(query); err != nil {
+		return err
+	}
+	// Add image_urls column if missing (migration for existing DBs)
+	_, _ = s.db.Exec(`ALTER TABLE articles ADD COLUMN image_urls TEXT DEFAULT '[]'`)
+	return nil
 }
 
 func (s *SQLiteStorage) Close() error {
@@ -77,9 +81,9 @@ func (s *SQLiteStorage) InsertArticle(article *models.Article) error {
 	query := `
 	INSERT INTO articles (
 		source_url, source_site, title, title_ru, description, content, content_ru,
-		author, category, tags, image_url, published_at, fetched_at, translated_at,
+		author, category, tags, image_url, image_urls, published_at, fetched_at, translated_at,
 		published_to_mkdocs, slug
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 	result, err := s.db.Exec(query,
 		article.SourceURL,
@@ -93,6 +97,7 @@ func (s *SQLiteStorage) InsertArticle(article *models.Article) error {
 		article.Category,
 		article.TagsJSON(),
 		article.ImageURL,
+		article.ImageURLsJSON(),
 		article.PublishedAt,
 		article.FetchedAt,
 		models.PtrToNullTime(article.TranslatedAt),
@@ -122,7 +127,8 @@ func (s *SQLiteStorage) UpdateArticle(article *models.Article) error {
 		content = ?,
 		tags = ?,
 		category = ?,
-		image_url = ?
+		image_url = ?,
+		image_urls = ?
 	WHERE id = ?
 	`
 	_, err := s.db.Exec(query,
@@ -135,6 +141,7 @@ func (s *SQLiteStorage) UpdateArticle(article *models.Article) error {
 		article.TagsJSON(),
 		article.Category,
 		article.ImageURL,
+		article.ImageURLsJSON(),
 		article.ID,
 	)
 	return err
@@ -144,7 +151,7 @@ func (s *SQLiteStorage) UpdateArticle(article *models.Article) error {
 func (s *SQLiteStorage) GetArticleByURL(sourceURL string) (*models.Article, error) {
 	query := `
 	SELECT id, source_url, source_site, title, title_ru, description, content, content_ru,
-		author, category, tags, image_url, published_at, fetched_at, translated_at,
+		author, category, tags, image_url, image_urls, published_at, fetched_at, translated_at,
 		published_to_mkdocs, slug
 	FROM articles WHERE source_url = ?
 	`
@@ -155,7 +162,7 @@ func (s *SQLiteStorage) GetArticleByURL(sourceURL string) (*models.Article, erro
 func (s *SQLiteStorage) GetArticleByID(id int64) (*models.Article, error) {
 	query := `
 	SELECT id, source_url, source_site, title, title_ru, description, content, content_ru,
-		author, category, tags, image_url, published_at, fetched_at, translated_at,
+		author, category, tags, image_url, image_urls, published_at, fetched_at, translated_at,
 		published_to_mkdocs, slug
 	FROM articles WHERE id = ?
 	`
@@ -166,7 +173,7 @@ func (s *SQLiteStorage) GetArticleByID(id int64) (*models.Article, error) {
 func (s *SQLiteStorage) GetUntranslatedArticles(limit int) ([]*models.Article, error) {
 	query := `
 	SELECT id, source_url, source_site, title, title_ru, description, content, content_ru,
-		author, category, tags, image_url, published_at, fetched_at, translated_at,
+		author, category, tags, image_url, image_urls, published_at, fetched_at, translated_at,
 		published_to_mkdocs, slug
 	FROM articles 
 	WHERE content != '' AND content_ru = ''
@@ -180,7 +187,7 @@ func (s *SQLiteStorage) GetUntranslatedArticles(limit int) ([]*models.Article, e
 func (s *SQLiteStorage) GetUnpublishedArticles(limit int) ([]*models.Article, error) {
 	query := `
 	SELECT id, source_url, source_site, title, title_ru, description, content, content_ru,
-		author, category, tags, image_url, published_at, fetched_at, translated_at,
+		author, category, tags, image_url, image_urls, published_at, fetched_at, translated_at,
 		published_to_mkdocs, slug
 	FROM articles 
 	WHERE content_ru != '' AND published_to_mkdocs = FALSE
@@ -194,7 +201,7 @@ func (s *SQLiteStorage) GetUnpublishedArticles(limit int) ([]*models.Article, er
 func (s *SQLiteStorage) GetRecentArticles(limit int) ([]*models.Article, error) {
 	query := `
 	SELECT id, source_url, source_site, title, title_ru, description, content, content_ru,
-		author, category, tags, image_url, published_at, fetched_at, translated_at,
+		author, category, tags, image_url, image_urls, published_at, fetched_at, translated_at,
 		published_to_mkdocs, slug
 	FROM articles 
 	ORDER BY fetched_at DESC
@@ -207,7 +214,7 @@ func (s *SQLiteStorage) GetRecentArticles(limit int) ([]*models.Article, error) 
 func (s *SQLiteStorage) GetRecentlyTranslatedArticles(limit int) ([]*models.Article, error) {
 	query := `
 	SELECT id, source_url, source_site, title, title_ru, description, content, content_ru,
-		author, category, tags, image_url, published_at, fetched_at, translated_at,
+		author, category, tags, image_url, image_urls, published_at, fetched_at, translated_at,
 		published_to_mkdocs, slug
 	FROM articles 
 	WHERE translated_at IS NOT NULL AND content_ru != ''
@@ -222,7 +229,7 @@ func (s *SQLiteStorage) GetRecentlyTranslatedArticles(limit int) ([]*models.Arti
 func (s *SQLiteStorage) GetArticlesWithEmptyContent() ([]*models.Article, error) {
 	query := `
 	SELECT id, source_url, source_site, title, title_ru, description, content, content_ru,
-		author, category, tags, image_url, published_at, fetched_at, translated_at,
+		author, category, tags, image_url, image_urls, published_at, fetched_at, translated_at,
 		published_to_mkdocs, slug
 	FROM articles 
 	WHERE content = '' OR content IS NULL OR LENGTH(content) < 1000 OR category = ''
@@ -236,7 +243,7 @@ func (s *SQLiteStorage) GetArticlesWithEmptyContent() ([]*models.Article, error)
 func (s *SQLiteStorage) GetAllArticles(limit int) ([]*models.Article, error) {
 	query := `
 	SELECT id, source_url, source_site, title, title_ru, description, content, content_ru,
-		author, category, tags, image_url, published_at, fetched_at, translated_at,
+		author, category, tags, image_url, image_urls, published_at, fetched_at, translated_at,
 		published_to_mkdocs, slug
 	FROM articles 
 	ORDER BY fetched_at DESC
@@ -261,7 +268,7 @@ func (s *SQLiteStorage) GetStats() (total, translated, published int, err error)
 
 func (s *SQLiteStorage) scanArticle(row *sql.Row) (*models.Article, error) {
 	var article models.Article
-	var tags string
+	var tags, imageURLs string
 	var translatedAt sql.NullTime
 	var publishedAt time.Time
 
@@ -278,6 +285,7 @@ func (s *SQLiteStorage) scanArticle(row *sql.Row) (*models.Article, error) {
 		&article.Category,
 		&tags,
 		&article.ImageURL,
+		&imageURLs,
 		&publishedAt,
 		&article.FetchedAt,
 		&translatedAt,
@@ -291,6 +299,7 @@ func (s *SQLiteStorage) scanArticle(row *sql.Row) (*models.Article, error) {
 	article.PublishedAt = publishedAt
 	article.TranslatedAt = models.NullTimeToPtr(translatedAt)
 	article.ParseTags(tags)
+	article.ParseImageURLs(imageURLs)
 
 	return &article, nil
 }
@@ -305,7 +314,7 @@ func (s *SQLiteStorage) scanArticles(query string, args ...interface{}) ([]*mode
 	var articles []*models.Article
 	for rows.Next() {
 		var article models.Article
-		var tags string
+		var tags, imageURLs string
 		var translatedAt sql.NullTime
 		var publishedAt time.Time
 
@@ -322,6 +331,7 @@ func (s *SQLiteStorage) scanArticles(query string, args ...interface{}) ([]*mode
 			&article.Category,
 			&tags,
 			&article.ImageURL,
+			&imageURLs,
 			&publishedAt,
 			&article.FetchedAt,
 			&translatedAt,
@@ -335,6 +345,7 @@ func (s *SQLiteStorage) scanArticles(query string, args ...interface{}) ([]*mode
 		article.PublishedAt = publishedAt
 		article.TranslatedAt = models.NullTimeToPtr(translatedAt)
 		article.ParseTags(tags)
+		article.ParseImageURLs(imageURLs)
 		articles = append(articles, &article)
 	}
 

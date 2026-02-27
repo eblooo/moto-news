@@ -72,12 +72,12 @@ func (s *ArticleScraper) ScrapeArticle(article *models.Article) error {
 	htmlStr := string(body)
 
 	// Strategy 1: Extract from JSON-LD structured data (most reliable)
-	content, imageURL, category, tags := s.extractFromJSONLD(htmlStr)
+	content, imageURLs, category, tags := s.extractFromJSONLD(htmlStr)
 
 	// Strategy 2: Fallback to HTML scraping if JSON-LD didn't work
 	if content == "" {
 		var htmlCategory string
-		content, imageURL, htmlCategory, tags = s.extractFromHTML(htmlStr)
+		content, imageURLs, htmlCategory, tags = s.extractFromHTML(htmlStr)
 		if category == "" {
 			category = htmlCategory
 		}
@@ -88,8 +88,11 @@ func (s *ArticleScraper) ScrapeArticle(article *models.Article) error {
 		article.Content = strings.TrimSpace(content)
 	}
 
-	if imageURL != "" && article.ImageURL == "" {
-		article.ImageURL = imageURL
+	if len(imageURLs) > 0 {
+		article.ImageURLs = imageURLs
+		if article.ImageURL == "" {
+			article.ImageURL = imageURLs[0]
+		}
 	}
 
 	if category != "" && article.Category == "" {
@@ -104,7 +107,7 @@ func (s *ArticleScraper) ScrapeArticle(article *models.Article) error {
 }
 
 // extractFromJSONLD extracts article content from JSON-LD structured data
-func (s *ArticleScraper) extractFromJSONLD(html string) (content, imageURL, category string, tags []string) {
+func (s *ArticleScraper) extractFromJSONLD(html string) (content string, imageURLs []string, category string, tags []string) {
 	// Find all JSON-LD blocks
 	re := regexp.MustCompile(`(?s)<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>`)
 	matches := re.FindAllStringSubmatch(html, -1)
@@ -130,17 +133,20 @@ func (s *ArticleScraper) extractFromJSONLD(html string) (content, imageURL, cate
 		// Extract category from articleSection
 		category = data.ArticleSection
 
-		// Extract image URL
+		// Extract all image URLs (schema.org Article can have multiple)
 		switch img := data.Image.(type) {
 		case string:
-			imageURL = img
+			if img != "" {
+				imageURLs = append(imageURLs, img)
+			}
 		case []interface{}:
-			if len(img) > 0 {
-				if imgStr, ok := img[0].(string); ok {
-					imageURL = imgStr
+			for _, v := range img {
+				if imgStr, ok := v.(string); ok && imgStr != "" {
+					imageURLs = append(imageURLs, imgStr)
 				}
 			}
 		}
+		imageURLs = uniqueStrings(imageURLs)
 
 		// Extract keywords/tags — filter out generic site-wide categories
 		switch kw := data.Keywords.(type) {
@@ -166,7 +172,7 @@ func (s *ArticleScraper) extractFromJSONLD(html string) (content, imageURL, cate
 }
 
 // extractFromHTML extracts article content by parsing HTML (fallback)
-func (s *ArticleScraper) extractFromHTML(htmlStr string) (content, imageURL, category string, tags []string) {
+func (s *ArticleScraper) extractFromHTML(htmlStr string) (content string, imageURLs []string, category string, tags []string) {
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlStr))
 	if err != nil {
 		return
@@ -196,7 +202,6 @@ func (s *ArticleScraper) extractFromHTML(htmlStr string) (content, imageURL, cat
 		for _, selector := range selectors {
 			doc.Find(selector).Each(func(i int, sel *goquery.Selection) {
 				if strings.Contains(selector, " p") {
-					// Selector already includes p
 					text := strings.TrimSpace(sel.Text())
 					if text != "" && len(text) > 50 && !isBoilerplate(text) {
 						paragraphs = append(paragraphs, text)
@@ -220,14 +225,26 @@ func (s *ArticleScraper) extractFromHTML(htmlStr string) (content, imageURL, cat
 		content = strings.Join(paragraphs, "\n\n")
 	}
 
-	// Extract featured image
+	// Collect all image URLs: first og:image (featured), then all <img> in article body
 	doc.Find("meta[property='og:image']").Each(func(i int, sel *goquery.Selection) {
-		if imageURL == "" {
-			if val, exists := sel.Attr("content"); exists {
-				imageURL = val
-			}
+		if val, exists := sel.Attr("content"); exists && val != "" {
+			imageURLs = append(imageURLs, val)
 		}
 	})
+	// All <img> inside article body (src or data-src for lazy loading)
+	articleSelectors := []string{"div.postBody", "article.article-content", "div.article-body", "div.content-body", "main"}
+	for _, sel := range articleSelectors {
+		doc.Find(sel).Find("img").Each(func(i int, img *goquery.Selection) {
+			src, _ := img.Attr("src")
+			if src == "" {
+				src, _ = img.Attr("data-src")
+			}
+			if src != "" {
+				imageURLs = append(imageURLs, src)
+			}
+		})
+	}
+	imageURLs = uniqueStrings(imageURLs)
 
 	// Extract tags
 	doc.Find("a[href*='/tag/'], a[href*='/category/'], span.tag").Each(func(i int, sel *goquery.Selection) {

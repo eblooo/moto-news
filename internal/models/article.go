@@ -18,7 +18,8 @@ type Article struct {
 	Author            string     `json:"author"`
 	Category          string     `json:"category"`
 	Tags              []string   `json:"tags"`
-	ImageURL          string     `json:"image_url"`
+	ImageURL          string     `json:"image_url"`   // featured (first) image
+	ImageURLs         []string   `json:"image_urls"` // all images from article (first = featured)
 	PublishedAt       time.Time  `json:"published_at"`
 	FetchedAt         time.Time  `json:"fetched_at"`
 	TranslatedAt      *time.Time `json:"translated_at"`
@@ -46,8 +47,30 @@ func (a *Article) ParseTags(jsonStr string) {
 		return
 	}
 	if err := json.Unmarshal([]byte(jsonStr), &a.Tags); err != nil {
-		// On parse failure, reset to empty to avoid partial state
 		a.Tags = []string{}
+	}
+}
+
+// ImageURLsJSON returns image URLs as JSON array for database storage
+func (a *Article) ImageURLsJSON() string {
+	if len(a.ImageURLs) == 0 {
+		return "[]"
+	}
+	b, err := json.Marshal(a.ImageURLs)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
+}
+
+// ParseImageURLs parses JSON string to image URLs slice
+func (a *Article) ParseImageURLs(jsonStr string) {
+	if jsonStr == "" || jsonStr == "[]" {
+		a.ImageURLs = []string{}
+		return
+	}
+	if err := json.Unmarshal([]byte(jsonStr), &a.ImageURLs); err != nil {
+		a.ImageURLs = []string{}
 	}
 }
 
